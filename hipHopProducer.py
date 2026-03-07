@@ -232,11 +232,3 @@ if __name__ == "__main__":
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
             print(f"🧹 临时文件已清理 (目录: {temp_dir})")
-
-# if __name__ == "__main__":
-#     app = HipHopAutoProject()
-#     query = input("请输入歌名（如：J. Cole c l o s e）: ")
-#     #vid = app.download_step(query)
-#     #segs, english_texts = app.transcribe_step(vid)
-#     #t_segs = app.generate_bilingual_srt(segs, english_texts)
-#     #app.burn_video(vid, t_segs)
