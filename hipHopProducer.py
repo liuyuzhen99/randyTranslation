@@ -4,13 +4,16 @@ import re
 from faster_whisper import WhisperModel
 from llama_cpp import Llama
 import yt_dlp
+import tempfile
+import shutil
+
 
 # ================= 配置区 =================
 # 修改为你本地 GGUF 模型的实际路径
 # MODEL_PATH = "/Users/randy/.cache/huggingface/hub/models--Randyliu99--qwen2.5-7b-jcole-gguf/snapshots/main/qwen2.5-7b-instruct-q4_k_m.gguf"
 # 视频输出文件名
 VIDEO_INPUT = "input_video.mp4"
-VIDEO_OUTPUT = "final_hiphop_mv.mp4"
+VIDEO_OUTPUT = "/Users/randy/Downloads/final_hiphop_mv.mp4"
 # ==========================================
 
 # --- 辅助函数：时间格式化 ---
@@ -33,19 +36,25 @@ class HipHopAutoProject:
         )
         self.whisper = WhisperModel("medium", device="cpu", compute_type="int8")
 
-    def download_step(self, song_name):
+    def download_step(self, song_name, output_path=VIDEO_INPUT):
         print(f"📥 正在搜索并下载: {song_name}...")
         ydl_opts = {
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'outtmpl': VIDEO_INPUT,
+            'outtmpl': output_path,
             'default_search': 'ytsearch1:',
             'noplaylist': True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([song_name])
-        return VIDEO_INPUT
+        return output_path
 
-    def transcribe_step(self, audio_path):
+    def transcribe_step(self, video_path, audio_path):
+        print("正在提取音轨...")
+        subprocess.run([
+            'ffmpeg', '-i', video_path, 
+            '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', 
+            audio_path, '-y'
+        ], check=True)
         print("🎙️ 正在提取音轨并识别 (Faster-Whisper)...")
         # vad_filter=True 能有效过滤掉嘻哈伴奏里的幻听
         segments, _ = self.whisper.transcribe(
@@ -146,6 +155,7 @@ class HipHopAutoProject:
                 f.write(f"{cn_text}\n\n")    # 中文译文
 
         print("✅ 所有任务已完成！")
+        return output_file
 
     def burn_video(self, video_path, srt_path):
         print("🎬 正在使用 FFmpeg 压制成品...")
@@ -190,8 +200,43 @@ if __name__ == "__main__":
     app = HipHopAutoProject()
     query = input("请输入歌名（如：J. Cole c l o s e）: ")
     
-    vid = app.download_step(query)
-    segs = app.transcribe_step(vid)
-    t_segs = app.smart_merge_and_translate(segs)
-    srt = app.save_srt(t_segs)
-    app.burn_video(vid, srt)
+    # 创建一个临时目录用于存放所有过程文件
+    # delete=True 会在程序结束时尝试删除，但为了稳妥，我们手动用 shutil 清理
+    base_temp_path = "/Users/randy/Downloads/"
+    if not os.path.exists(base_temp_path):
+        os.makedirs(base_temp_path)
+    temp_dir = tempfile.mkdtemp(prefix="hiphop_tmp_",dir=base_temp_path)
+    try:
+        # 1. 下载：修改输出路径到临时目录
+        tmp_video_path = os.path.join(temp_dir, "raw_video.mp4")
+        # 注意：你需要稍微修改 download_step 让它接受路径参数
+        vid = app.download_step(query, output_path=tmp_video_path)
+        
+        # 2. 识别：生成的数据在内存中
+        segs, english_texts = app.transcribe_step(vid, os.path.join(temp_dir, "temp_audio.wav"))
+        
+        # 3. 翻译：字幕文件也存放在临时目录
+        tmp_srt_path = os.path.join(temp_dir, "bilingual.srt")
+        srt = app.generate_bilingual_srt(segs, english_texts, output_file=tmp_srt_path)
+        
+        # 4. 压制：只有最终产物保存在当前执行目录（外部）
+        app.burn_video(vid, srt)
+        
+        print(f"\n✨ 制作完成！成品已保存至当前目录下的 {VIDEO_OUTPUT}")
+
+    except Exception as e:
+        print(f"❌ 程序运行出错: {e}")
+    
+    finally:
+        # 无论成功还是失败，清理整个临时文件夹
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+            print(f"🧹 临时文件已清理 (目录: {temp_dir})")
+
+# if __name__ == "__main__":
+#     app = HipHopAutoProject()
+#     query = input("请输入歌名（如：J. Cole c l o s e）: ")
+#     #vid = app.download_step(query)
+#     #segs, english_texts = app.transcribe_step(vid)
+#     #t_segs = app.generate_bilingual_srt(segs, english_texts)
+#     #app.burn_video(vid, t_segs)
