@@ -6,6 +6,7 @@ from llama_cpp import Llama
 import yt_dlp
 import tempfile
 import shutil
+import torch
 
 
 # ================= 配置区 =================
@@ -35,6 +36,8 @@ class HipHopAutoProject:
             n_gpu_layers=-1 # 如果有显卡/金属加速，记得开启
         )
         self.whisper = WhisperModel("medium", device="cpu", compute_type="int8")
+        self.temp_dir = None
+        print("✅ 模型加载完成！")
 
     def download_step(self, song_name, output_path=VIDEO_INPUT):
         print(f"📥 正在搜索并下载: {song_name}...")
@@ -55,6 +58,21 @@ class HipHopAutoProject:
             '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', 
             audio_path, '-y'
         ], check=True)
+
+        # --------------------------
+        # add demucs分离人声和音轨
+        demucs_cmd = [
+            "python3", "-m", "demucs",
+            "-o", self.temp_dir,
+            "--two-stems", "vocals",
+            "-d", "mps",  # 既然你命令行 mps 成功了，这里保持一致
+            audio_path
+        ]
+        # 增加 check=True 和 capture_output=True 来获取错误细节
+        result = subprocess.run(demucs_cmd, check=True, capture_output=True, text=True)
+        audio_path = os.path.join(self.temp_dir, "htdemucs", "temp_audio", "vocals.wav")  # 注意路径要和 demucs 输出一致
+        # --------------------------
+
         print("🎙️ 正在提取音轨并识别 (Faster-Whisper)...")
         # vad_filter=True 能有效过滤掉嘻哈伴奏里的幻听
         segments, _ = self.whisper.transcribe(
@@ -198,25 +216,27 @@ class HipHopAutoProject:
 # ================= 运行区 =================
 if __name__ == "__main__":
     app = HipHopAutoProject()
+    os.makedirs("/Users/randy/Downloads/temp/", exist_ok=True)  # 确保临时目录存在
+    app.temp_dir = "/Users/randy/Downloads/temp/"
     query = input("请输入歌名（如：J. Cole c l o s e）: ")
     
     # 创建一个临时目录用于存放所有过程文件
     # delete=True 会在程序结束时尝试删除，但为了稳妥，我们手动用 shutil 清理
-    base_temp_path = "/Users/randy/Downloads/"
-    if not os.path.exists(base_temp_path):
-        os.makedirs(base_temp_path)
-    temp_dir = tempfile.mkdtemp(prefix="hiphop_tmp_",dir=base_temp_path)
+    # base_temp_path = "/Users/randy/Downloads/"
+    # if not os.path.exists(base_temp_path):
+    #     os.makedirs(base_temp_path)
+    # temp_dir = tempfile.mkdtemp(prefix="hiphop_tmp_",dir=base_temp_path)
     try:
         # 1. 下载：修改输出路径到临时目录
-        tmp_video_path = os.path.join(temp_dir, "raw_video.mp4")
+        tmp_video_path = os.path.join(app.temp_dir, "raw_video.mp4")
         # 注意：你需要稍微修改 download_step 让它接受路径参数
         vid = app.download_step(query, output_path=tmp_video_path)
         
         # 2. 识别：生成的数据在内存中
-        segs, english_texts = app.transcribe_step(vid, os.path.join(temp_dir, "temp_audio.wav"))
+        segs, english_texts = app.transcribe_step(vid, os.path.join(app.temp_dir, "temp_audio.wav"))
         
         # 3. 翻译：字幕文件也存放在临时目录
-        tmp_srt_path = os.path.join(temp_dir, "bilingual.srt")
+        tmp_srt_path = os.path.join(app.temp_dir, "bilingual.srt")
         srt = app.generate_bilingual_srt(segs, english_texts, output_file=tmp_srt_path)
         
         # 4. 压制：只有最终产物保存在当前执行目录（外部）
@@ -229,6 +249,6 @@ if __name__ == "__main__":
     
     finally:
         # 无论成功还是失败，清理整个临时文件夹
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-            print(f"🧹 临时文件已清理 (目录: {temp_dir})")
+        if os.path.exists(app.temp_dir):
+            shutil.rmtree(app.temp_dir)
+            print(f"🧹 临时文件已清理 (目录: {app.temp_dir})")
