@@ -175,7 +175,7 @@ class HipHopAutoProject:
         print("✅ 所有任务已完成！")
         return output_file
 
-    def burn_video(self, video_path, srt_path):
+    def burn_video(self, video_path, srt_path, final_path=VIDEO_OUTPUT):
         print("🎬 正在使用 FFmpeg 压制成品...")
         # 这里的 style 参考了你之前代码中的设置
         style = (
@@ -197,7 +197,7 @@ class HipHopAutoProject:
             '-crf', '20',          # 高质量压制
             '-c:a', 'copy',        # 音频直接复制，不损失音质
             '-y',                  # 覆盖输出
-            VIDEO_OUTPUT
+            final_path
         ]
         try:
             # 使用 subprocess.run 运行，并捕获错误信息
