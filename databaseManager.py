@@ -7,6 +7,11 @@ from datetime import datetime
 from getSpotifyFollowingList import get_all_followed_artists
 from getChannelIDfromFollowingList import fetch_youtube_channel_ids
 from getLatestMVfromRss import job_rss_scanner
+import os
+from dotenv import load_dotenv
+
+load_dotenv()  # 从 .env 文件加载环境变量
+
 # from apscheduler.schedulers.background import BackgroundScheduler
 
 # ==========================================
@@ -195,7 +200,7 @@ if __name__ == "__main__":
         scheduler.shutdown()
         TASK_QUEUE.put(None) # 关闭消费者线程
 '''
-DB_FILE = "music_agent.db"
+DB_FILE = os.getenv("DB_NAME")
 TASK_QUEUE = queue.Queue()
 
 # 初始化表

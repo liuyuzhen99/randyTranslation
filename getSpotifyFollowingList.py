@@ -1,11 +1,15 @@
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
+import os
+from dotenv import load_dotenv
+
+load_dotenv()  # 从 .env 文件加载环境变量
 
 # 1. 认证设置 (信息在 Spotify Developer Dashboard 获取)
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-    client_id="9e13cb64518d49238879e352841183b8",
-    client_secret="b894213ab5e4464387d1498cb34dd2b9",
-    redirect_uri="https://127.0.0.1:8888/callback",
+    client_id=os.getenv("SPOTIPY_CLIENT_ID"),
+    client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
+    redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
     scope="user-follow-read",
     open_browser=True,
     show_dialog=True
