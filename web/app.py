@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import tempfile
 import shutil
-from hipHopProducer import HipHopAutoProject # 导入你之前的类
+from core.hipHopProducer import HipHopAutoProject # 导入你之前的类
 
 st.set_page_config(page_title="Hip-Hop MV Maker", page_icon="🎵")
 

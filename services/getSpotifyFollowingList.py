@@ -1,7 +1,12 @@
+import traceback
+
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 import os
 from dotenv import load_dotenv
+from utils.logger_manager import log_manager
+
+logger = log_manager.get_task_logger("SPOTIFY_SYNC")
 
 load_dotenv()  # 从 .env 文件加载环境变量
 
@@ -17,23 +22,38 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
 
 def get_all_followed_artists():
     artists = []
+    logger.info("开始从 Spotify 获取关注艺人列表...")
     # 第一次请求
-    results = sp.current_user_followed_artists(limit=50)
-    artists.extend(results['artists']['items'])
-    
-    # 循环分页获取剩余艺人
-    while results['artists']['next']:
-        # 获取最后一个艺人的 ID 作为游标
-        last_id = results['artists']['cursors']['after']
-        results = sp.current_user_followed_artists(limit=50, after=last_id)
+    try:
+        results = sp.current_user_followed_artists(limit=50)
         artists.extend(results['artists']['items'])
+        logger.info(f"首次请求成功，获取到 {len(results['artists']['items'])} 位艺人。")
+    
+        # 循环分页获取剩余艺人
+        while results['artists']['next']:
+            try:
+            # 获取最后一个艺人的 ID 作为游标
+                last_id = results['artists']['cursors']['after']
+                results = sp.current_user_followed_artists(limit=50, after=last_id)
+                artists.extend(results['artists']['items'])
+            except Exception as page_err:
+                # 记录分页请求中的非致命错误，尝试继续
+                logger.error(f"获取其他页spotify关注艺人列表时发生错误: {page_err}")
+                break # 如果游标失效，则停止分页，返回已拿到的数据
         
-    return [
-        {
-            'id': a['id'], 
-            'name': a['name']
-        } for a in artists
-    ]
+        return [
+            {
+                'id': a['id'], 
+                'name': a['name']
+            } for a in artists
+        ]
+    except spotipy.exceptions.SpotifyException as e:
+        logger.error(f"❌ Spotify API 认证或权限错误: {e}")
+    except Exception as e:
+        # 使用 traceback 记录详细堆栈到日志文件，方便离线排查
+        logger.error(f"🚨 获取艺人列表时发生未知致命错误: {e}")
+        logger.error(traceback.format_exc())
+    return [] # 发生错误时返回空列表，确保后续流程不直接崩溃
 
 # 运行获取
 # followed_list = get_all_followed_artists()

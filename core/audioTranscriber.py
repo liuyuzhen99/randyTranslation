@@ -77,7 +77,6 @@ class SeparateTranscriber:
         os.remove(vocals_save_path)        
         return full_data, english_texts_only
     
-# transcriber = HipHopAutoProject()
-# start_time = time.time()
+# transcriber = SeparateTranscriber()
 # full_data, english_texts_only = transcriber.transcribe_step("/Users/randy/Downloads/poor_thang_audio.mp3")
-# end_time = time.time()
+# print(english_texts_only)

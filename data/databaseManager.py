@@ -4,9 +4,9 @@ import queue
 import time
 import random
 from datetime import datetime
-from getSpotifyFollowingList import get_all_followed_artists
-from getChannelIDfromFollowingList import fetch_youtube_channel_ids
-from getLatestMVfromRss import job_rss_scanner
+from services.getSpotifyFollowingList import get_all_followed_artists
+from services.getChannelIDfromFollowingList import fetch_youtube_channel_ids
+from services.getLatestMVfromRss import job_rss_scanner
 import os
 from dotenv import load_dotenv
 
