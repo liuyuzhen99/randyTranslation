@@ -51,14 +51,7 @@ class HipHopAutoProject:
             ydl.download([song_name])
         return output_path
 
-    def transcribe_step(self, temp_dir, video_path, audio_path):
-        print("正在提取音轨...")
-        subprocess.run([
-            'ffmpeg', '-i', video_path, 
-            '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', 
-            audio_path, '-y'
-        ], check=True)
-
+    def transcribe_step(self, temp_dir, audio_path):
         # --------------------------
         # add demucs分离人声和音轨
         demucs_cmd = [
@@ -87,7 +80,7 @@ class HipHopAutoProject:
             # 3. 关键：设置静音过滤和压缩比限制
             vad_filter=True,  # 确保开启静音过滤
             vad_parameters=dict(min_silence_duration_ms=500), # 超过0.5秒没声音就跳过
-            
+            condition_on_previous_text=False, # 稳定性核心：关闭前文关联，防止 Rap 的重复节奏导致幻听死循环
             # 4. 幻听控制：如果这一段重复率太高，丢弃它
             compression_ratio_threshold=2.4, 
             no_speech_threshold=0.6,
@@ -113,8 +106,8 @@ class HipHopAutoProject:
                 # print(f"已提取: {clean_text}")
 
         # 清理临时音频
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
+        # if os.path.exists(audio_path):
+        os.remove(audio_path)
 
         # 返回这两个列表供后续使用
         return full_data, english_texts_only

@@ -166,7 +166,7 @@ class MusicAuditor:
         return report
 
 # --- 使用示例 ---
-auditor = MusicAuditor(deepseek_api_key="sk-9fdc22a0cd39441aae1b3badfec3c120")
+# auditor = MusicAuditor(deepseek_api_key="your_deepseek_api_key_here")
 
-result = auditor.run_full_audit("Dave", "my 27th birthday")
-print(json.dumps(result, indent=2, ensure_ascii=False))
+# result = auditor.run_full_audit("Dave", "my 27th birthday")
+# print(json.dumps(result, indent=2, ensure_ascii=False))
