@@ -1,6 +1,20 @@
+import os
 import subprocess
+import traceback
+# 导入你的日志类实例
+from utils.logger_manager import log_manager
+
+# 初始化专门针对视频合成任务的 Logger
+logger = log_manager.get_task_logger("VIDEO_RENDER")
 
 def burn_video(video_path, srt_path, final_path):
+    logger.info(f"🎬 开始视频压制任务: {os.path.basename(final_path)}")
+    if not os.path.exists(video_path):
+        logger.error(f"❌ 压制失败：原始视频不存在 -> {video_path}")
+        return False
+    if not os.path.exists(srt_path):
+        logger.error(f"❌ 压制失败：字幕文件不存在 -> {srt_path}")
+        return False
     # 这里的 style 参考了你之前代码中的设置
     style = (
         "Fontname=PingFang SC,"
@@ -25,14 +39,20 @@ def burn_video(video_path, srt_path, final_path):
     ]
     try:
         # 使用 subprocess.run 运行，并捕获错误信息
+        logger.info("⚡ FFmpeg 进程启动，正在压制中...")
         result = subprocess.run(cmd, capture_output=True, text=True)
         
         if result.returncode == 0:
-            print(f"\n✅ 压制成功！")
-            print(f"🎥 成品路径: {final_path}")
+            logger.info(f"✅ 压制成功！成品已生成: {final_path}")
+            return True
         else:
-            print(f"\n❌ 压制失败！FFmpeg 报错如下:")
-            print(result.stderr)
+            logger.error(f"❌ FFmpeg 压制进程返回非零状态码: {result.returncode}")
+            logger.error(f"🔍 FFmpeg 错误详情: {result.stderr[-500:]}") # 只记录最后500字关键报错
+            return False
             
+    except FileNotFoundError:
+        logger.error("🚨 系统未找到 ffmpeg 可执行程序，请检查是否已安装并加入 PATH。")
     except Exception as e:
-        print(f"程序运行发生异常: {e}")
+        logger.error(f"🚨 压制模块发生未预料异常: {e}")
+        logger.error(traceback.format_exc())
+        return False

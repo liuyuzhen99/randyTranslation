@@ -8,10 +8,10 @@ from typing import Dict
 import traceback
 
 # 导入你原来的类 (假设你的代码文件名是 hiphop_logic.py)
-from hipHopProducer import HipHopAutoProject 
+# from core.hipHopProducer import HipHopAutoProject 
 # 为了演示，我假设它就在当前文件中或已正确导入
 
-from logger_manager import LogManager
+from utils.logger_manager import LogManager
 
 # 获取一个系统的全局 logger
 system_logger = LogManager.get_task_logger("SYSTEM")
@@ -22,7 +22,7 @@ app = FastAPI(title="Hip-hop MV 自动化工坊 API")
 # 用于存储任务状态：{"task_id": {"status": "processing", "progress": "正在下载...", "result": None}}
 task_status: Dict[str, dict] = {}
 # 初始化你的项目实例 (加载模型)
-producer = HipHopAutoProject()
+# producer = HipHopAutoProject()
 
 # --- 请求/响应模型 ---
 class TaskRequest(BaseModel):
