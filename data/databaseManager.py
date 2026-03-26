@@ -1,23 +1,10 @@
 import sqlite3
 import threading
 import queue
-import time
-import random
 from datetime import datetime
-from services.getSpotifyFollowingList import get_all_followed_artists
-from services.getChannelIDfromFollowingList import fetch_youtube_channel_ids
-from services.getLatestMVfromRss import job_rss_scanner
-from core.aiAuditor import MusicAuditor
-from core.aiTranslator import Translator
-from core.audioTranscriber import SeparateTranscriber
-from core.videoMaker import burn_video
-from core.ytbAVDownloader import download_step_audio, download_step_video
-import os
 from dotenv import load_dotenv
 import traceback
 from utils.logger_manager import log_manager
-
-logger = log_manager.get_task_logger("ORCHESTRATOR")
 
 load_dotenv()  # 从 .env 文件加载环境变量
 
@@ -83,13 +70,14 @@ class DatabaseManager:
         self.db_path = db_path
         self.task_queue = queue.Queue()
         self._init_db()
+        self.logger = log_manager.get_task_logger("DB_MANAGER")
         
         # 初始化数据库消费者线程
         self.consumer = DatabaseConsumer(self.db_path, self.task_queue)
         self.consumer.start()
 
     def _init_db(self):
-        logger.info(f"🏗️ 正在初始化数据库: {self.db_path}")
+        self.logger.info(f"🏗️ 正在初始化数据库: {self.db_path}")
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -124,7 +112,7 @@ class DatabaseManager:
             conn.commit()
             conn.close()
         except Exception as e:
-            logger.critical(f"🚨 数据库初始化失败: {e}")
+            self.logger.critical(f"🚨 数据库初始化失败: {e}")
             raise
 
     def add_task(self, action, data):
@@ -140,7 +128,7 @@ class DatabaseConsumer(threading.Thread):
         self.db_name = db_name
         self.task_queue = task_queue
         self.daemon = True
-        self.logger = log_manager.get_task_logger("PIPELINE_WORKER")
+        self.logger = log_manager.get_task_logger("DB_CONSUMER")
 
     def run(self):
         self.logger.info("🚀 生产流水线守护线程已就绪...")
@@ -209,6 +197,26 @@ class DatabaseConsumer(threading.Thread):
                     ''', (data['video_id'], data['spotify_id'], data['title'], data['published_at']))
                     if cursor.rowcount > 0:
                         self.logger.info(f"🆕 发现新 MV 并存库: {data['title']}")
+                elif action == "UPDATE_VIDEO_STATUS":
+                    if data['processed_status'] not in ['new', 'processing', 'completed', 'skipped', 'failed']:
+                        self.logger.warning(f"⚠️ 收到未知的 processed_status: {data['processed_status']}，已忽略。")
+                        continue
+                    if data['processed_status'] == 'processing':
+                        cursor.execute('''
+                            UPDATE videos SET processed_status = 'processing' WHERE video_id = ?
+                        ''', (data['video_id'],))
+                    else:
+                        cursor.execute('''
+                            UPDATE videos SET 
+                            processed_status=?, 
+                            final_video_path=?, 
+                            srt_path=? 
+                        WHERE video_id=?
+                        ''', (data['processed_status'], data['final_path'], data['srt_path'], data['video_id']))
+                    self.logger.info(f"✅ 视频处理结果已更新到数据库: {data['video_id']}")
+                else:
+                    self.logger.warning(f"⚠️ 收到未知的写操作请求: [{action}]，已忽略。")
+                    continue
                                 
                 conn.commit()
             except Exception as e:
@@ -218,62 +226,6 @@ class DatabaseConsumer(threading.Thread):
             finally:
                 self.task_queue.task_done()
         conn.close()
-
-# ==========================================
-# 3. 生产者逻辑
-# ==========================================
-
-# 任务 A: 每月同步 Spotify
-def job_sync_spotify(q):
-    logger.info("🚀 触发任务: Spotify 关注列表同步...")
-    # 这里接入你的 Spotify API 函数
-    try:
-        followed_list = get_all_followed_artists()
-        if followed_list:
-            q.put(("SYNC_SPOTIFY", followed_list))
-            logger.info(f"✅ 已抓取 {len(followed_list)} 位艺人并推送至写入队列。")
-        else:
-            logger.warning("⚠️ 未能从 Spotify 获取到任何艺人数据。")
-    except Exception as e:
-        logger.error(f"🚨 Spotify 同步作业失败: {e}")
-
-# 任务 B: 每周填充 YouTube ID (受控并发)
-def job_fill_youtube_ids(db_name, q, batch_size=20):
-    logger.info(f"🔍 触发任务: 增量抓取 YouTube ID (BatchSize: {batch_size})...")
-    targets = []
-    try:
-        # 读操作：直接连数据库查，不进队列（因为开启了 WAL）
-        conn = sqlite3.connect(db_name)
-        cur = conn.cursor()
-        cur.execute('''
-            SELECT spotify_id, name FROM artists 
-            WHERE status='active' AND yt_channel_id IS NULL 
-            ORDER BY last_yt_search_at ASC LIMIT ?
-        ''', (batch_size,))
-        targets = cur.fetchall()
-        conn.close()
-    except Exception as e:
-        logger.error(f"🚨 读取待补充 ID 的艺人列表失败: {e}")
-        return
-    if not targets:
-        logger.info("☕ 没有需要补充 YouTube ID 的艺人，休息一下。")
-        return
-    
-    for sid, name in targets:
-        try:
-            logger.info(f"👨‍💻 正在通过浏览器查询艺人: {name}")
-            # 这里接入你的 DrissionPage 抓取函数
-            yt_id = fetch_youtube_channel_ids([name]).get(name, None) # 返回可能是 None
-            # yt_id = fetch_youtube_id(name) 
-            time.sleep(random.uniform(2, 5)) # 模拟网络延迟和反爬休眠
-            # yt_id = f"UC_FAKE_{name.upper()}" 
-            q.put(("UPDATE_YT_ID", {'sid': sid, 'yt_id': yt_id, 'name': name}))
-        except Exception as e:
-            logger.error(f"❌ 抓取 {name} 的 YouTube ID 时发生错误: {e}")
-            continue # 继续处理下一个艺人
-    logger.info(f"🏁 本批次 ID 抓取任务推送完毕。")
-
-
 
 # ==========================================
 # 4. 主程序入口
@@ -293,26 +245,7 @@ if __name__ == "__main__":
     # 启动调度器
     scheduler = BackgroundScheduler()
     
-    # 设定每月 1 号执行同步
-    scheduler.add_job(job_sync_spotify, 'cron', day=1, hour=3, args=[TASK_QUEUE])
-    
-    # 设定每周一执行 ID 填充 (每次只抓 20 个)
-    scheduler.add_job(job_fill_youtube_ids, 'cron', day_of_week='mon', hour=4, args=[DB_FILE, TASK_QUEUE, 20])
-    
-    scheduler.start()
-    
-    print("🌟 Music Agent 自动同步服务已启动 (按 Ctrl+C 退出)")
-    
-    try:
-        # 保持主进程活跃
-        while True:
-            time.sleep(1)
-    except (KeyboardInterrupt, SystemExit):
-        print("👋 正在关闭服务...")
-        scheduler.shutdown()
-        TASK_QUEUE.put(None) # 关闭消费者线程
-'''
-# DB_FILE = os.getenv("DB_NAME")
+   # DB_FILE = os.getenv("DB_NAME")
 # TASK_QUEUE = queue.Queue()
 
 # # 初始化表
@@ -335,4 +268,23 @@ if __name__ == "__main__":
 # TASK_QUEUE.put(None) 
 # db_writer.join()
 
-# print("✅ 数据同步完成，程序安全退出。")
+# print("✅ 数据同步完成，程序安全退出。") # 设定每月 1 号执行同步
+    scheduler.add_job(job_sync_spotify, 'cron', day=1, hour=3, args=[TASK_QUEUE])
+    
+    # 设定每周一执行 ID 填充 (每次只抓 20 个)
+    scheduler.add_job(job_fill_youtube_ids, 'cron', day_of_week='mon', hour=4, args=[DB_FILE, TASK_QUEUE, 20])
+    
+    scheduler.start()
+    
+    print("🌟 Music Agent 自动同步服务已启动 (按 Ctrl+C 退出)")
+    
+    try:
+        # 保持主进程活跃
+        while True:
+            time.sleep(1)
+    except (KeyboardInterrupt, SystemExit):
+        print("👋 正在关闭服务...")
+        scheduler.shutdown()
+        TASK_QUEUE.put(None) # 关闭消费者线程
+'''
+

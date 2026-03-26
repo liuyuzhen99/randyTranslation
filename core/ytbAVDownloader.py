@@ -16,6 +16,7 @@ def download_step_video(song_name, output_path):
         'default_search': 'ytsearch1:',
         'noplaylist': True,
     }
+    output_path += '.mp4'
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             status = ydl.download([song_name])
@@ -62,6 +63,7 @@ def download_step_audio(song_name, output_path):
         },
         'logger': logger,                   # 将 yt-dlp 的日志直接输出到我们的 Logger，方便统一管理
     }
+    output_path += '.mp3'
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

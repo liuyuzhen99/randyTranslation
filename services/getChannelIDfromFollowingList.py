@@ -1,10 +1,10 @@
 import traceback
-
+import sqlite3
 from DrissionPage import ChromiumOptions, ChromiumPage
 import time
 import urllib.parse
-from services.getSpotifyFollowingList import get_all_followed_artists
 from utils.logger_manager import log_manager
+import random
 
 # 初始化针对 YouTube 爬虫的任务 Logger
 logger = log_manager.get_task_logger("YT_CHANNEL_ID")
@@ -77,6 +77,44 @@ def fetch_youtube_channel_ids(artist_list):
         logger.error(f"关闭浏览器时报错: {quit_err}")
 
     return results
+
+# ==========================================
+# 2. 生产者任务：youtube ID 抓取
+# ==========================================
+def job_fill_youtube_ids(db_name, q, batch_size=20):
+    logger.info(f"🔍 触发任务: 增量抓取 YouTube ID (BatchSize: {batch_size})...")
+    targets = []
+    try:
+        # 读操作：直接连数据库查，不进队列（因为开启了 WAL）
+        conn = sqlite3.connect(db_name)
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT spotify_id, name FROM artists 
+            WHERE status='active' AND yt_channel_id IS NULL 
+            ORDER BY last_yt_search_at ASC LIMIT ?
+        ''', (batch_size,))
+        targets = cur.fetchall()
+        conn.close()
+    except Exception as e:
+        logger.error(f"🚨 读取待补充 ID 的艺人列表失败: {e}")
+        return
+    if not targets:
+        logger.info("☕ 没有需要补充 YouTube ID 的艺人，休息一下。")
+        return
+    
+    for sid, name in targets:
+        try:
+            logger.info(f"👨‍💻 正在通过浏览器查询艺人: {name}")
+            # 这里接入你的 DrissionPage 抓取函数
+            yt_id = fetch_youtube_channel_ids([name]).get(name, None) # 返回可能是 None
+            # yt_id = fetch_youtube_id(name) 
+            time.sleep(random.uniform(2, 5)) # 模拟网络延迟和反爬休眠
+            # yt_id = f"UC_FAKE_{name.upper()}" 
+            q.put(("UPDATE_YT_ID", {'sid': sid, 'yt_id': yt_id, 'name': name}))
+        except Exception as e:
+            logger.error(f"❌ 抓取 {name} 的 YouTube ID 时发生错误: {e}")
+            continue # 继续处理下一个艺人
+    logger.info(f"🏁 本批次 ID 抓取任务推送完毕。")
 
 # 测试运行
 '''

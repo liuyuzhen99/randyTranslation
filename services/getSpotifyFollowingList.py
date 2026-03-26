@@ -55,6 +55,23 @@ def get_all_followed_artists():
         logger.error(traceback.format_exc())
     return [] # 发生错误时返回空列表，确保后续流程不直接崩溃
 
+
+# ==========================================
+# 2. 生产者任务：spotify 关注列表同步
+# ==========================================
+def job_sync_spotify(q):
+    logger.info("🚀 触发任务: Spotify 关注列表同步...")
+    # 这里接入你的 Spotify API 函数
+    try:
+        followed_list = get_all_followed_artists()
+        if followed_list:
+            q.put(("SYNC_SPOTIFY", followed_list))
+            logger.info(f"✅ 已抓取 {len(followed_list)} 位艺人并推送至写入队列。")
+        else:
+            logger.warning("⚠️ 未能从 Spotify 获取到任何艺人数据。")
+    except Exception as e:
+        logger.error(f"🚨 Spotify 同步作业失败: {e}")
+
 # 运行获取
 # followed_list = get_all_followed_artists()
 # print(f"你一共关注了 {len(followed_list)} 位艺人：", followed_list)

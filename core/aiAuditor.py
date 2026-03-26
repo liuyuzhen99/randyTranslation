@@ -74,7 +74,7 @@ class MusicAuditor:
         return None
 
     def ai_audit(self, lyrics):
-        if not lyrics or len(lyrics.strip()) < 50:
+        if not lyrics or len(lyrics) < 10:
             logger.warning("⚠️ 歌词文本过短或为空，跳过 AI 审计。")
             return {"score": 0, "decision": "Reject", "reason": "歌词内容不足以审计"}
         logger.info("🧠 正在请求 DeepSeek 进行歌词深度审计...")
@@ -104,8 +104,9 @@ class MusicAuditor:
             audit_json = json.loads(response.choices[0].message.content)
             score = audit_json.get("score", 0)
             decision = audit_json.get("decision", "Reject")
+            reason = audit_json.get('reason', None)
             
-            logger.info(f"🤖 AI 审计完成：得分={score}, 决策={decision}")
+            logger.info(f"🤖 AI 审计完成：得分={score},理由={reason},决策={decision}")
             return audit_json
         except json.JSONDecodeError as je:
             logger.error(f"❌ AI 返回格式错误 (无法解析 JSON): {je}")
