@@ -66,7 +66,7 @@ def run_full_pipeline(db_name, q, video_id):
             return
         title = video_info[1]
         # 1. 更新状态为处理中
-        q.put(("UPDATE_VIDEO_STATUS", {'processed_status': 'processing', 'video_id': video_id}))
+        q.put(("UPDATE_VIDEO_STATUS", {'processed_status': 'processing', 'title': title, 'video_id': video_id}))
         
         try:
             # A. 下载模块 (core/ytbAVDownloader.py)
@@ -88,6 +88,7 @@ def run_full_pipeline(db_name, q, video_id):
                 q.put(("UPDATE_VIDEO_STATUS", 
                        {'processed_status': 'skipped',
                          'video_id': video_id,
+                         'title': title,
                          'final_path': None,
                          'srt_path': None}))
                 return
@@ -108,17 +109,19 @@ def run_full_pipeline(db_name, q, video_id):
             burn_video(video_path, output_file, final_path)
             q.put(("UPDATE_VIDEO_RESULT", {
                 'processed_status': 'completed',
+                'title': title,
                 'video_id': video_id,
                 'final_path': final_path,
                 'srt_path': srt_path
             }))
-            logger.info(f"🎉 视频 {video_id} 生产完成！")
+            logger.info(f"🎉 视频 {video_id} ({title}) 生产完成！")
 
         except Exception as e:
             err_msg = str(e)
             logger.error(f"🚨 流水线崩溃: {err_msg}")
             q.put(("UPDATE_VIDEO_STATUS", {
                 'processed_status': 'failed',
+                'title': title,
                 'video_id': video_id,
                 'final_path': None,
                 'srt_path': None

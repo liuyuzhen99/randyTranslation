@@ -1,5 +1,6 @@
 import gc
-
+import librosa
+import numpy as np
 import torch
 import torchaudio
 from faster_whisper import WhisperModel
@@ -10,6 +11,7 @@ from demucs.apply import apply_model
 import torch
 import os
 import traceback
+from dbm import sqlite3
 from utils.logger_manager import log_manager
 
 # 初始化专门针对转录任务的 Logger
@@ -32,8 +34,20 @@ class SeparateTranscriber:
             raise
         
 
-    def transcribe_step(self, audio_path):
+    def transcribe_step(self, video_id, db_path, task_queue):
         # --------------------------
+        try:
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            cur.execute("SELECT title FROM videos WHERE video_id=?", (video_id,))
+            video_info = cur.fetchall()
+            title = video_info[0][0] if video_info else "Unknown Title"
+            logger.info(f"✅ 成功从数据库读取歌曲:{title} video_id:{video_id} ")
+        except Exception as db_err:
+            logger.error(f"🚨 无法读取数据库video信息: {db_err}")
+            logger.error(traceback.format_exc())
+            return [], []
+        audio_path = f"/Users/randy/Downloads/temp/{title}_{video_id}.mp3"  # 这里的路径要和下载模块保持一致
         vocals_save_path = os.path.join('/Users/randy/Downloads/temp/', "vocals.wav")
         try:
             if not os.path.exists(audio_path):
@@ -99,6 +113,12 @@ class SeparateTranscriber:
                     })
                     english_texts_only.append(clean_text)
             logger.info(f"✅ 转录完成，共识别出 {len(english_texts_only)} 条字幕。")
+            raw_lyrics = "\n".join(english_texts_only)
+            task_queue.put(("UPDATE_LYRICS", {
+                'video_id': video_id,
+                'lyrics': raw_lyrics
+            }))
+            logger.info("✅ 已将更新歌词任务推送到数据库队列。")
             # --- C. 清理临时文件 ---
             # 仅清理分离后的人声 wav，原始音频建议在主循环最后处理
             os.remove(vocals_save_path)        
@@ -110,6 +130,71 @@ class SeparateTranscriber:
             if os.path.exists(vocals_save_path):
                 os.remove(vocals_save_path)
             return [], []
+        
+    def analyze_audio(self,video_id, db_path, task_queue, lyrics_text):
+        logger.info(f"📊 开始分析音频: {video_id}")
+        try:
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            cur.execute("SELECT title FROM videos WHERE video_id=?", (video_id,))
+            video_info = cur.fetchall()
+            title = video_info[0][0] if video_info else "Unknown Title"
+            logger.info(f"✅ 成功从数据库读取歌曲:{title} video_id:{video_id} ")
+        except Exception as db_err:
+            logger.error(f"🚨 无法读取数据库video信息: {db_err}")
+            logger.error(traceback.format_exc())
+            return None
+        audio_path = f"/Users/randy/Downloads/temp/{title}_{video_id}.mp3"  # 这里的路径要和下载模块保持一致
+        # 优化 1：指定采样率 sr=22050 (足够分析节奏)，并仅加载前 180 秒以节省 CPU 内存
+        # 如果歌曲短于 180s，它会自动加载全长
+        if not os.path.exists(audio_path):
+            logger.error(f"❌ 音频文件不存在: {audio_path}")
+            return None
+        try:
+            y, sr = librosa.load(audio_path, sr=22050, duration=180) 
+            
+            # 优化 2：计算节奏 (BPM)
+            # 使用更轻量的运算方式
+            onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+            tempo = librosa.feature.tempo(onset_envelope=onset_env, sr=sr)[0]
+            
+            # 优化 3：计算均方根能量 (RMS Energy)
+            # 我们只取有声音部分的平均能量，避开片头片尾的静音
+            rms = librosa.feature.rms(y=y)
+            energy = np.mean(rms)
+            
+            # 优化 4：计算音频时长 (Duration)
+            duration_seconds = librosa.get_duration(y=y, sr=sr)
+            duration_minutes = duration_seconds / 60
+            
+            # 优化 5：计算词密度 (Words Per Minute)
+            word_density = None
+            if lyrics_text:
+                # 简单的分词：按空格和标点符号分割
+                word_count = len(lyrics_text.split())
+                word_density = word_count / duration_minutes if duration_minutes > 0 else 0
+            
+            audit_results = {
+                "tempo": round(tempo, 2),
+                "energy": round(energy, 4),
+                "word_density": round(word_density, 2)
+            }
+            logger.info(f"📈 分析结果: BPM={tempo:.1f}, Energy={energy:.4f}, WPM={word_density:.1f}")
+            task_queue.put(("UPDATE_VIDEO_ANALYSIS", {
+                'video_id': video_id,
+                'title': title,
+                'bpm': round(tempo, 2),
+                'energy': round(energy, 4),
+                'word_density': round(word_density, 2)
+            }))
+            logger.info("✅ 已将更新视频分析结果任务推送到数据库队列。")
+            return audit_results
+        except FileNotFoundError:
+            logger.error(f"❌ 分析失败：找不到音频文件 {audio_path}")
+        except Exception as e:
+            logger.error(f"🚨 Librosa 物理分析发生未知错误: {e}")
+            logger.error(traceback.format_exc())
+        return None
     
 # transcriber = SeparateTranscriber()
 # full_data, english_texts_only = transcriber.transcribe_step("/Users/randy/Downloads/poor_thang_audio.mp3")

@@ -8,8 +8,9 @@ from utils.logger_manager import log_manager
 # 初始化专门针对下载任务的 Logger
 logger = log_manager.get_task_logger("DOWNLOADER")
 
-def download_step_video(song_name, output_path):
-    logger.info(f"🎬 开始搜索并下载视频: {song_name}")
+def download_step_video(video_id, song_name, output_path):
+    output_path = os.path.join('/Users/randy/Downloads/temp', f"{song_name}_{video_id}")
+    logger.info(f"🎬 开始搜索并下载视频: {song_name} (ID: {video_id})")
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': output_path,
@@ -19,7 +20,7 @@ def download_step_video(song_name, output_path):
     output_path += '.mp4'
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            status = ydl.download([song_name])
+            status = ydl.download('https://www.youtube.com/watch?v=' + video_id)
         # 检查文件是否真的生成了
         if status == 0 and os.path.exists(output_path):
             logger.info(f"✅ 视频下载成功: {output_path}")
@@ -30,8 +31,9 @@ def download_step_video(song_name, output_path):
         logger.error(traceback.format_exc())
     return output_path
 
-def download_step_audio(song_name, output_path):
-    logger.info(f"🎧 开始搜索并下载音频: {song_name}")
+def download_step_audio(video_id, song_name):
+    output_path = os.path.join('/Users/randy/Downloads/temp', f"{song_name}_{video_id}")
+    logger.info(f"🎧 开始搜索并下载音频: {song_name} (ID: {video_id})")
     
     ydl_opts = {
         # 1. 仅下载音频并转为 mp3 (速度最快)
@@ -68,13 +70,13 @@ def download_step_audio(song_name, output_path):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             # ydl.download 返回 0 表示成功，非 0 表示有错误但被 ignoreerrors 捕获了
-            status = ydl.download([song_name])
+            status = ydl.download(['https://www.youtube.com/watch?v=' + video_id])
             if status == 0 and os.path.exists(output_path):
-                logger.info(f"✅ 音频处理完成: {output_path}")
+                logger.info(f"✅ 音频处理完成: {output_path} video_id: {video_id}")
             elif status != 0:
-                logger.error(f"❌ {song_name} 下载失败，yt-dlp 返回错误代码: {status}")
+                logger.error(f"❌ {song_name} 下载失败，video_id: {video_id}，yt-dlp 返回错误代码: {status}")
             else:
-                logger.warning(f"⚠️ 下载完成但未在预期路径发现文件: {output_path}")
+                logger.warning(f"⚠️ 下载完成但未在预期路径发现文件: {output_path}, video_id: {video_id}")
     except yt_dlp.utils.DownloadError as de:
         logger.error(f"🛑 yt-dlp 下载错误: {de}")
     except Exception as e:

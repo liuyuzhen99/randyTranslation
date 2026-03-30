@@ -5,9 +5,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 import traceback
 from utils.logger_manager import log_manager
-
-load_dotenv()  # 从 .env 文件加载环境变量
-
 # from apscheduler.schedulers.background import BackgroundScheduler
 
 # ==========================================
@@ -87,6 +84,7 @@ class DatabaseManager:
                     spotify_id TEXT PRIMARY KEY,
                     name TEXT,
                     yt_channel_id TEXT,
+                    genres TEXT,
                     status TEXT DEFAULT 'active',
                     last_sync_at DATETIME,
                     last_yt_search_at DATETIME
@@ -104,6 +102,10 @@ class DatabaseManager:
                     local_video_path TEXT,
                     srt_path TEXT,
                     final_video_path TEXT,
+                    bpm REAL,
+                    energy REAL,
+                    word_density REAL,
+                    lyrics TEXT,
                     error_msg TEXT,
                     FOREIGN KEY (spotify_id) REFERENCES artists (spotify_id)
                 )
@@ -158,10 +160,10 @@ class DatabaseConsumer(threading.Thread):
                     # 1. 逻辑删除不在新列表中的艺人
                     cursor.execute(f"UPDATE artists SET status='unfollowed' WHERE spotify_id NOT IN ({','.join(['?']*len(ids))})", ids)
                     # 2. 增量更新/插入
-                    insert_data = [(a['id'], a['name'], now) for a in data]
+                    insert_data = [(a['id'], a['name'], a['genres'], now) for a in data]
                     cursor.executemany('''
-                        INSERT INTO artists (spotify_id, name, status, last_sync_at)
-                        VALUES (?, ?, 'active', ?)
+                        INSERT INTO artists (spotify_id, name, genres, status, last_sync_at)
+                        VALUES (?, ?, ?, 'active', ?)
                         ON CONFLICT(spotify_id) DO UPDATE SET 
                             status='active', 
                             last_sync_at=excluded.last_sync_at,
@@ -170,13 +172,13 @@ class DatabaseConsumer(threading.Thread):
                     self.logger.info(f"✅ Spotify 同步完成，处理记录: {len(data)} 条")
                     # for a in data:
                     #     cursor.execute('''
-                    #         INSERT INTO artists (spotify_id, name, status, last_sync_at)
-                    #         VALUES (?, ?, 'active', ?)
+                    #         INSERT INTO artists (spotify_id, name, genres, status, last_sync_at)
+                    #         VALUES (?, ?, ?, 'active', ?)
                     #         ON CONFLICT(spotify_id) DO UPDATE SET 
                     #             status='active', 
                     #             last_sync_at=excluded.last_sync_at,
                     #             name=excluded.name
-                    #     ''', (a['id'], a['name'], now))
+                    #     ''', (a['id'], a['name'], a['genres'], now))
                         
                 elif action == "UPDATE_YT_ID":
                     cursor.execute('''
@@ -196,7 +198,7 @@ class DatabaseConsumer(threading.Thread):
                         VALUES (?, ?, ?, ?, 'new')
                     ''', (data['video_id'], data['spotify_id'], data['title'], data['published_at']))
                     if cursor.rowcount > 0:
-                        self.logger.info(f"🆕 发现新 MV 并存库: {data['title']}")
+                        self.logger.info(f"🆕 发现新 MV 并存库: 歌曲名称{data['title']} video_id:{data['video_id']}")
                 elif action == "UPDATE_VIDEO_STATUS":
                     if data['processed_status'] not in ['new', 'processing', 'completed', 'skipped', 'failed']:
                         self.logger.warning(f"⚠️ 收到未知的 processed_status: {data['processed_status']}，已忽略。")
@@ -214,6 +216,20 @@ class DatabaseConsumer(threading.Thread):
                         WHERE video_id=?
                         ''', (data['processed_status'], data['final_path'], data['srt_path'], data['video_id']))
                     self.logger.info(f"✅ 视频处理结果已更新到数据库: {data['video_id']}")
+                elif action == "UPDATE_VIDEO_LYRICS":
+                    cursor.execute('''
+                        UPDATE videos SET lyrics = ? WHERE video_id = ?
+                    ''', (data['lyrics'], data['video_id']))
+                    self.logger.info(f"✅ 视频歌词已更新到数据库: 歌曲名称{data['title']} video_id:{data['video_id']}")
+                elif action == "UPDATE_VIDEO_ANALYSIS":
+                    cursor.execute('''
+                        UPDATE videos SET 
+                            bpm = ?, 
+                            energy = ?, 
+                            word_density = ?
+                        WHERE video_id = ?
+                    ''', (data['bpm'], data['energy'], data['word_density'], data['video_id']))
+                    self.logger.info(f"✅ 视频分析结果已更新到数据库: 歌曲名称{data['title']} video_id:{data['video_id']}")
                 else:
                     self.logger.warning(f"⚠️ 收到未知的写操作请求: [{action}]，已忽略。")
                     continue

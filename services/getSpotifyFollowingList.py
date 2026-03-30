@@ -44,7 +44,8 @@ def get_all_followed_artists():
         return [
             {
                 'id': a['id'], 
-                'name': a['name']
+                'name': a['name'],
+                'genres': ",".join(a['genres']) if a['genres'] else "" # 转化为逗号分隔字符串
             } for a in artists
         ]
     except spotipy.exceptions.SpotifyException as e:

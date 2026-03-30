@@ -130,7 +130,7 @@ def job_rss_scanner(db_path, task_queue, days=14):
                         # 推送到队列，由 DatabaseConsumer 负责去重并写入 videos 表
                         task_queue.put(("NEW_VIDEO_FOUND", video_data))
                         found_count += 1
-                        logger.info(f"✨ 发现新 MV: {name} - {entry.title}")
+                        logger.info(f"✨ 发现新 MV: {name} - {entry.title} video_id: {entry.yt_videoid}")
                 # 定时记录进度，防止 600+ 艺人扫描时看起来像卡死了
                 if (index + 1) % 50 == 0:
                     logger.info(f"📊 扫描进度: {index + 1}/{len(artists)} 位艺人已检查...")
