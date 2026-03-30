@@ -34,7 +34,7 @@ class MusicAuditor:
         # 提取历史参考资料作为 Few-Shot 案例
         reference_str = ""
         if vector_results and vector_results['ids'][0]:
-            reference_str = "\n【参考你库中已通过的高质量案例】:\n"
+            reference_str = "\n【参考库中已通过的高质量案例】:\n"
             for i in range(len(vector_results['ids'][0])):
                 ref_title = vector_results['metadatas'][0][i].get('title', 'Unknown')
                 ref_lyrics = vector_results['documents'][0][i][:300] # 取前300字
