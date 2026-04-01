@@ -35,7 +35,7 @@ class MusicVectorCommander:
             cur = conn.cursor()
             # 只查活跃且有 YouTube ID 的艺人
             query = """
-                SELECT v.title, v.bpm, v.energy, v.word_density, v.lyrics, a.name, a.genres
+                SELECT v.title, v.bpm, v.energy, v.word_density, v.lyrics, a.name
                 FROM videos v
                 LEFT JOIN artists a ON v.spotify_id = a.spotify_id
                 WHERE v.video_id = ?
@@ -48,11 +48,10 @@ class MusicVectorCommander:
                 return
 
             # 解构数据
-            title, bpm, energy, word_density, lyrics, artist_name, genres_str = row
+            title, bpm, energy, word_density, lyrics, artist_name, = row
             
             # 数据清洗：确保没有空值
             artist_name = artist_name if artist_name else "Unknown Artist"
-            genres_str = genres_str if genres_str else ""
             lyrics = lyrics if lyrics else ""
 
             logger.info(f"💾 准备同步歌曲: {title} (ID: {video_id})")
@@ -71,7 +70,7 @@ class MusicVectorCommander:
                 "bpm": float(bpm),
                 "energy": round(float(energy), 2),
                 "word_density": round(float(word_density), 1),
-                "genres": genres_str,  # 存储完整字符串用于 $contains 检索
+                # "genres": genres_str,  # 存储完整字符串用于 $contains 检索
             }
 
             # 存入向量库
@@ -99,7 +98,7 @@ class MusicVectorCommander:
             # 只查活跃且有 YouTube ID 的艺人
             # 联合查询：获取视频特征、艺人名及流派
             query = """
-                SELECT v.title, v.bpm, v.energy, v.word_density, v.lyrics, a.name, a.genres
+                SELECT v.title, v.bpm, v.energy, v.word_density, v.lyrics, a.name
                 FROM videos v
                 LEFT JOIN artists a ON v.spotify_id = a.spotify_id
                 WHERE v.video_id = ?
@@ -110,18 +109,15 @@ class MusicVectorCommander:
             if not row:
                 logger.warning(f"⚠️ 数据库中未找到 video_id: {video_id}")
                 return None
-            title, bpm, energy, word_density, lyrics, artist_name, genres_str = row
+            title, bpm, energy, word_density, lyrics, artist_name,  = row
             # 处理流派：将字符串转为列表，方便后续处理（如果需要）
-            genres_list = [g.strip() for g in genres_str.split(',')] if genres_str else []
             
-            logger.info(f"✅ 读取数据成功: [{artist_name}] - {title} (流派: {genres_str})")
         except Exception as db_err:
             logger.error(f"🚨 无法读取数据库video信息: {db_err}")
             logger.error(traceback.format_exc())
             return None
         try:
             # 逻辑：库里存的 genres 字段如果包含当前艺人的任何一个流派，即视为匹配
-            genre_filters = [{"genres": {"$contains": g}} for g in genres_list]
             # 1. 定义多维物理过滤条件
             # 逻辑：BPM 差距 15% 以内，能量 0.2 以内，词密度 20% 以内
             where_filter = {
@@ -129,13 +125,12 @@ class MusicVectorCommander:
                     {"artist": {"$eq": artist_name}},
                     {"bpm": {"$gte": bpm * 0.9, "$lte": bpm * 1.1}}, # 缩小到10%误差
                     {"energy": {"$gte": energy - 0.15, "$lte": energy + 0.15}},
-                    {"word_density": {"$gte": word_density * 0.85, "$lte": word_density * 1.15}},
+                    {"word_density": {"$gte": word_density * 0.85, "$lte": word_density * 1.15}}
                     # 只有当 current_genres 不为空时才加入流派过滤
-                    {"$or": genre_filters} if genre_filters else {}
+                    #{"$or": genre_filters} if genre_filters else {}
                 ]
             }
             # 清理空字典（如果 genre_filters 为空）
-            if not genre_filters: where_filter["$and"].pop()
 
             # 2. 执行语义检索 (使用当前歌词作为 Query)
             # ChromaDB 会自动将 query_texts 转换为向量

@@ -66,8 +66,8 @@ class DatabaseManager:
     def __init__(self, db_path="data/music_agent.db"):
         self.db_path = db_path
         self.task_queue = queue.Queue()
-        self._init_db()
         self.logger = log_manager.get_task_logger("DB_MANAGER")
+        self._init_db()
         
         # 初始化数据库消费者线程
         self.consumer = DatabaseConsumer(self.db_path, self.task_queue)
@@ -84,7 +84,6 @@ class DatabaseManager:
                     spotify_id TEXT PRIMARY KEY,
                     name TEXT,
                     yt_channel_id TEXT,
-                    genres TEXT,
                     status TEXT DEFAULT 'active',
                     last_sync_at DATETIME,
                     last_yt_search_at DATETIME
@@ -110,7 +109,22 @@ class DatabaseManager:
                     FOREIGN KEY (spotify_id) REFERENCES artists (spotify_id)
                 )
             ''')
+            # 行级字幕对齐表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS subtitles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    video_id TEXT,
+                    line_index INTEGER,
+                    start_time REAL,    -- 存储秒数，方便后续计算
+                    end_time REAL,
+                    en_text TEXT,
+                    zh_text TEXT,
+                    status TEXT DEFAULT 'raw', -- raw, translated, confirmed
+                    FOREIGN KEY (video_id) REFERENCES videos (video_id)
+                )
+            ''')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_proc_status ON videos(processed_status);')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_sub_vid ON subtitles(video_id);')
             conn.commit()
             conn.close()
         except Exception as e:
@@ -137,6 +151,8 @@ class DatabaseConsumer(threading.Thread):
         try:
             conn = sqlite3.connect(self.db_name, timeout=30)
             conn.execute('PRAGMA journal_mode=WAL;') # 必开，支持并发读
+            conn.execute('PRAGMA busy_timeout=10000;')   # 推荐 5~15 秒，根据你的写事务时长调整
+            conn.execute('PRAGMA synchronous=NORMAL;')   # 可选，平衡速度与安全
             cursor = conn.cursor()
         except Exception as e:
             self.logger.critical(f"❌ 数据库连接失败，写线程终止: {e}")
@@ -145,6 +161,7 @@ class DatabaseConsumer(threading.Thread):
         while True:
             task = self.task_queue.get()
             if task is None: 
+                self.task_queue.task_done()
                 self.logger.info("👋 收到停止信号，正在关闭写线程...")
                 break # 收到 None 则退出
             action, data = task
@@ -160,10 +177,10 @@ class DatabaseConsumer(threading.Thread):
                     # 1. 逻辑删除不在新列表中的艺人
                     cursor.execute(f"UPDATE artists SET status='unfollowed' WHERE spotify_id NOT IN ({','.join(['?']*len(ids))})", ids)
                     # 2. 增量更新/插入
-                    insert_data = [(a['id'], a['name'], a['genres'], now) for a in data]
+                    insert_data = [(a['id'], a['name'], now) for a in data]
                     cursor.executemany('''
-                        INSERT INTO artists (spotify_id, name, genres, status, last_sync_at)
-                        VALUES (?, ?, ?, 'active', ?)
+                        INSERT INTO artists (spotify_id, name, status, last_sync_at)
+                        VALUES (?, ?, 'active', ?)
                         ON CONFLICT(spotify_id) DO UPDATE SET 
                             status='active', 
                             last_sync_at=excluded.last_sync_at,
@@ -230,6 +247,28 @@ class DatabaseConsumer(threading.Thread):
                         WHERE video_id = ?
                     ''', (data['bpm'], data['energy'], data['word_density'], data['video_id']))
                     self.logger.info(f"✅ 视频分析结果已更新到数据库: 歌曲名称{data['title']} video_id:{data['video_id']}")
+                elif action == "INIT_SUBTITLES":
+                    """批量初始化行级字幕表"""
+                    video_id = data['video_id']
+                    segments = data['segments']
+                    
+                    # 1. 先清理该视频可能存在的旧字幕（支持重跑幂等性）
+                    cursor.execute("DELETE FROM subtitles WHERE video_id = ?", (video_id,))
+                    
+                    # 2. 准备批量插入数据
+                    # 对应表结构: video_id, line_index, start_time, end_time, en_text, status
+                    insert_data = [
+                        (video_id, i, s['start'], s['end'], s['text'], 'raw')
+                        for i, s in enumerate(segments)
+                    ]
+                    
+                    cursor.executemany('''
+                        INSERT INTO subtitles (
+                            video_id, line_index, start_time, end_time, en_text, status
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                    ''', insert_data)
+                    
+                    self.logger.info(f"✨ Subtitles 已初始化: {video_id} (共 {len(insert_data)} 行)")
                 else:
                     self.logger.warning(f"⚠️ 收到未知的写操作请求: [{action}]，已忽略。")
                     continue
@@ -239,9 +278,11 @@ class DatabaseConsumer(threading.Thread):
                 self.logger.error(f"❌ 数据库写入操作 [{action}] 失败: {e}")
                 self.logger.error(traceback.format_exc())
                 conn.rollback()
+                break  # 非 locked 错误直接结束本次任务
             finally:
                 self.task_queue.task_done()
         conn.close()
+        return None
 
 # ==========================================
 # 4. 主程序入口

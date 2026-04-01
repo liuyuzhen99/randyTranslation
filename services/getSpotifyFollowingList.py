@@ -28,7 +28,7 @@ def get_all_followed_artists():
         results = sp.current_user_followed_artists(limit=50)
         artists.extend(results['artists']['items'])
         logger.info(f"首次请求成功，获取到 {len(results['artists']['items'])} 位艺人。")
-    
+        logger.info(f"请求响应示例: {results['artists']['items'][0] if results['artists']['items'] else '无数据'}")
         # 循环分页获取剩余艺人
         while results['artists']['next']:
             try:
@@ -44,8 +44,8 @@ def get_all_followed_artists():
         return [
             {
                 'id': a['id'], 
-                'name': a['name'],
-                'genres': ",".join(a['genres']) if a['genres'] else "" # 转化为逗号分隔字符串
+                'name': a['name']
+                #'genres': ",".join(a['genres'])#if a['genres'] else "" # 转化为逗号分隔字符串
             } for a in artists
         ]
     except spotipy.exceptions.SpotifyException as e:

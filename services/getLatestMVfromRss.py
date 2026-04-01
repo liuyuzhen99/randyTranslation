@@ -146,3 +146,81 @@ def job_rss_scanner(db_path, task_queue, days=14):
                 break
 
     logger.info(f"🏁 扫描任务结束。共推送 {found_count} 个潜在 MV，过程中发生 {error_count} 次错误。")
+
+def job_rss_scanner_channelID(db_path, task_queue, days, channel_id):
+    """
+    从数据库读取 ID 并扫描近两周 MV
+    """
+    logger.info(f"📡 开始扫描任务。范围: 过去 {days} 天。")
+    artists = []
+
+    try:
+        # 1. 连库读取已激活且有 ID 的艺人
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        # 只查活跃且有 YouTube ID 的艺人
+        cur.execute("SELECT spotify_id, name, yt_channel_id FROM artists WHERE status='active' AND yt_channel_id = ?", (channel_id,))
+        artists = cur.fetchall()
+        conn.close()
+        logger.info(f"✅ 成功从数据库读取 {len(artists)} 位活跃艺人。")
+    except Exception as db_err:
+        logger.error(f"🚨 无法读取数据库艺人列表: {db_err}")
+        logger.error(traceback.format_exc())
+        return
+    
+    deadline = datetime.now() - timedelta(days=days)
+    found_count = 0
+    error_count = 0
+
+    for index, (sid, name, channel_id) in enumerate(artists):
+        rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        
+        try:
+            feed = feedparser.parse(rss_url)
+            # 检查 feed 是否包含 bozo 异常（feedparser 的内置错误标志）
+            if feed.bozo:
+                logger.warning(f"⚠️ 解析 {name} 的 RSS 时遇到非致命异常: {feed.bozo_exception}")
+            if not feed.entries:
+                continue
+
+            for entry in feed.entries:
+                try:
+                    # 解析发布时间
+                    pub_date = datetime.fromtimestamp(time.mktime(entry.published_parsed))
+                except (AttributeError, TypeError):
+                    logger.warning(f"⏰ {name} - {entry.title[:20]}... 时间解析失败，跳过。")
+                    continue
+
+                if pub_date > deadline:
+                    # 调用过滤函数
+                    is_valid, reason = is_valid_mv(entry.title, entry.link)
+                    
+                    if is_valid:
+                        video_data = {
+                            'video_id': entry.yt_videoid,
+                            'spotify_id': sid,
+                            'artist_name': name,
+                            'title': entry.title,
+                            'link': entry.link,
+                            'published_at': pub_date.strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        
+                        # 推送到队列，由 DatabaseConsumer 负责去重并写入 videos 表
+                        task_queue.put(("NEW_VIDEO_FOUND", video_data))
+                        found_count += 1
+                        logger.info(f"✨ 发现新 MV: {name} - {entry.title} video_id: {entry.yt_videoid}")
+                # 定时记录进度，防止 600+ 艺人扫描时看起来像卡死了
+                if (index + 1) % 50 == 0:
+                    logger.info(f"📊 扫描进度: {index + 1}/{len(artists)} 位艺人已检查...")
+            
+            # 频率控制：623 个艺人如果请求太快会被 YouTube 临时屏蔽
+            time.sleep(0.3) 
+            
+        except Exception as e:
+            error_count += 1
+            logger.error(f"⚠️ 扫描艺人 {name} (ID: {channel_id}) 时出错: {e}")
+            if error_count > 20:
+                logger.critical("🚨 连续报错次数过多，可能已被 YouTube 封禁 IP，停止扫描任务！")
+                break
+
+    logger.info(f"🏁 扫描任务结束。共推送 {found_count} 个潜在 MV，过程中发生 {error_count} 次错误。")

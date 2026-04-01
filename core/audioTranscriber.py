@@ -11,7 +11,7 @@ from demucs.apply import apply_model
 import torch
 import os
 import traceback
-from dbm import sqlite3
+import sqlite3
 from utils.logger_manager import log_manager
 
 # 初始化专门针对转录任务的 Logger
@@ -119,6 +119,12 @@ class SeparateTranscriber:
                 'lyrics': raw_lyrics
             }))
             logger.info("✅ 已将更新歌词任务推送到数据库队列。")
+            # 任务 2: ✨ 新增：初始化 subtitles 表（行级对齐数据）
+            task_queue.put(("INIT_SUBTITLES", {
+                'video_id': video_id,
+                'segments': full_data  # 这里的 full_data 包含 start, end, text
+            }))
+            logger.info("✅ 已将初始化字幕任务推送到数据库队列。")
             # --- C. 清理临时文件 ---
             # 仅清理分离后的人声 wav，原始音频建议在主循环最后处理
             os.remove(vocals_save_path)        
