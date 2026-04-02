@@ -98,14 +98,14 @@ class Translator:
         # --- 步骤 A: 构建 Prompt ---
         # 将歌词合并，并带上序号，方便模型对应
         logger.info(f"✍️ 开始翻译任务，共 {len(english_texts)} 行歌词。")
-        references = vector_manager.query_song_level_style(english_texts, n_results=3)
+        references = vector_manager.query_song_level_style(video_id, db_name,  n_results=3)
         logger.info(f"🔍 从向量库检索到 {len(references)} 个风格参考范例。")
         anchored_block = self._prepare_anchored_lyrics(english_texts)
         dynamic_few_shot = ""
         if references:
             dynamic_few_shot = "【风格参考范例（请模仿其翻译质感与遣词风格）】:\n"
             for i, ref in enumerate(references):
-                dynamic_few_shot += f"范例 {i+1} (来自 {ref['artist']}):\n原文: {ref['en_source']}\n译文: {ref['zh_reference']}\n---\n"
+                dynamic_few_shot += f"范例 {i+1} (来自 {ref['artist']}):\n原文: {ref['en']}\n译文: {ref['zh']}\n---\n"
         else:
             # 兜底逻辑
             dynamic_few_shot = """
@@ -203,7 +203,7 @@ class Translator:
                         'zh_text': cn_text
                     })
             # --- 步骤 D: 批量回填 SQLite ---
-            task_queue.put("UPDATE_CH_SUBTITLES", subtitles_to_db)
+            task_queue.put(("UPDATE_CH_SUBTITLES", subtitles_to_db))
             logger.info(f"✅ SRT 文件生成成功: {output_file}")
             return output_file
         except Exception as e:

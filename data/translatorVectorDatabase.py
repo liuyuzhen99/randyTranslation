@@ -1,3 +1,5 @@
+import traceback
+
 import chromadb
 from chromadb.utils import embedding_functions
 import sqlite3
@@ -204,3 +206,47 @@ class TranslationVectorManager:
 
         except Exception as e:
             logger.error(f"❌ 手动导入向量库失败: {e}")
+
+    def query_song_level_style(self, video_id, db_path, n_results=5):
+        try:
+            # 1. 从数据库中获取歌曲的完整歌词
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            query = "SELECT lyrics FROM videos WHERE video_id = ?"
+            cur.execute(query, (video_id,))
+            row = cur.fetchone()
+            conn.close()
+            if not row:
+                logger.warning(f"⚠️ 数据库中未找到 video_id: {video_id} 的歌词信息。")
+                return []
+            full_lyrics_en = row[0]
+            if not full_lyrics_en:
+                logger.warning(f"⚠️ video_id: {video_id} 的歌词内容为空。")
+                return []
+        except Exception as db_err:
+            logger.error(f"🚨 无法读取数据库歌词信息: {db_err}")
+            logger.error(traceback.format_exc())
+            return []
+        """
+        为整首歌寻找 5 个最具代表性的审美参考点
+        """
+        # 提取歌词中信息熵最高的部分（通常是第一段或副歌）进行检索
+        # 或者直接对全文进行摘要检索
+        search_query = full_lyrics_en[:3000] # 取前3000字作为特征锚点
+        
+        results = self.collection.query(
+            query_texts=[search_query],
+            n_results=n_results,
+            include=['documents', 'metadatas', 'distances']
+        )
+
+        references = []
+        for i in range(len(results['ids'][0])):
+            if results['distances'][0][i] < 0.6: # 全篇匹配时放宽一点阈值
+                meta = results['metadatas'][0][i]
+                references.append({
+                    "en": results['documents'][0][i],
+                    "zh": meta.get('chinese_vibe'),
+                    "artist": meta.get('artist')
+                })
+        return references

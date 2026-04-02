@@ -123,9 +123,12 @@ class MusicVectorCommander:
             where_filter = {
                 "$and": [
                     {"artist": {"$eq": artist_name}},
-                    {"bpm": {"$gte": bpm * 0.9, "$lte": bpm * 1.1}}, # 缩小到10%误差
-                    {"energy": {"$gte": energy - 0.15, "$lte": energy + 0.15}},
-                    {"word_density": {"$gte": word_density * 0.85, "$lte": word_density * 1.15}}
+                    {"bpm": {"$gte": bpm * 0.9}}, # 缩小到10%误差
+                    {"bpm": {"$lte": bpm * 1.1}}, # 缩小到10%误差
+                    {"energy": {"$gte": energy - 0.15}},
+                    {"energy": {"$lte": energy + 0.15}},
+                    {"word_density": {"$gte": word_density * 0.85}},
+                    {"word_density": {"$lte": word_density * 1.15}}
                     # 只有当 current_genres 不为空时才加入流派过滤
                     #{"$or": genre_filters} if genre_filters else {}
                 ]
@@ -147,13 +150,14 @@ class MusicVectorCommander:
                 logger.info(f"🔎 第一层未命中。正在尝试【全流派范围】下的物理特征检索...")
                 fallback_filter = {
                     "$and": [
-                        {"bpm": {"$gte": bpm * 0.85, "$lte": bpm * 1.15}},
-                        {"energy": {"$gte": energy - 0.2, "$lte": energy + 0.2}},
-                        {"word_density": {"$gte": word_density * 0.8, "$lte": word_density * 1.2}},
-                        {"$or": genre_filters} if genre_filters else {}
+                        {"bpm": {"$gte": bpm * 0.85}},
+                        {"bpm": {"$lte": bpm * 1.15}},
+                        {"energy": {"$gte": energy - 0.2}},
+                        {"energy": {"$lte": energy + 0.2}},
+                        {"word_density": {"$gte": word_density * 0.8}},
+                        {"word_density": {"$lte": word_density * 1.2}}
                     ]
                 }
-                if not genre_filters: fallback_filter["$and"].pop()
                 results = self.collection.query(
                     query_texts=[lyrics],
                     n_results=n_results,
@@ -162,12 +166,11 @@ class MusicVectorCommander:
             
             # --- 4. 第三层：兜底检索 (仅语义 + 基础物理特征) ---
             if not results['ids'] or len(results['ids'][0]) == 0:
-                self.logger.warning("⚠️ 第二层未找到。执行最终兜底：纯语义 + 宽泛物理特征...")
+                logger.warning("⚠️ 第二层未找到。执行最终兜底：纯语义 + 宽泛物理特征...")
                 where_level_3 = {
                     "$and": [
-                        {"bpm": {"$gte": bpm * 0.7, "$lte": bpm * 1.3}},
-                        {"energy": {"$gte": energy - 0.3, "$lte": energy + 0.3}},
-                        {"word_density": {"$gte": word_density * 0.7, "$lte": word_density * 1.3}}
+                        {"energy": {"$gte": energy - 0.3}},
+                        {"energy": {"$lte": energy + 0.3}}
                     ]
                 }
                 results = self.collection.query(query_texts=[lyrics], n_results=n_results, where=where_level_3)

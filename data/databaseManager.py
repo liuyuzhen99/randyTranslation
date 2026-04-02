@@ -237,7 +237,7 @@ class DatabaseConsumer(threading.Thread):
                     cursor.execute('''
                         UPDATE videos SET lyrics = ? WHERE video_id = ?
                     ''', (data['lyrics'], data['video_id']))
-                    self.logger.info(f"✅ 视频歌词已更新到数据库: 歌曲名称{data['title']} video_id:{data['video_id']}")
+                    self.logger.info(f"✅ 视频歌词已更新到数据库: video_id:{data['video_id']}")
                 elif action == "UPDATE_VIDEO_ANALYSIS":
                     cursor.execute('''
                         UPDATE videos SET 
@@ -269,6 +269,31 @@ class DatabaseConsumer(threading.Thread):
                     ''', insert_data)
                     
                     self.logger.info(f"✨ Subtitles 已初始化: {video_id} (共 {len(insert_data)} 行)")
+                elif action == "UPDATE_CH_SUBTITLES":
+                    # data 此时是一个由 Translator 传过来的 list, 包含多个 dict
+                    if not data or not isinstance(data, list):
+                        self.logger.warning("⚠️ UPDATE_CH_SUBTITLES 接收到的数据格式非法或为空。")
+                        continue
+                    
+                    # 1. 提取视频 ID（用于日志展示）
+                    video_id = data[0].get('video_id', 'Unknown')
+                    
+                    # 2. 构造 executemany 所需的参数元组列表
+                    # SQL 语句中的顺序是：SET zh_text = ?, status = 'translated' WHERE video_id = ? AND line_index = ?
+                    # 所以元组顺序必须是 (zh_text, video_id, line_index)
+                    update_params = [
+                        (item['zh_text'], item['video_id'], item['line_index'])
+                        for item in data
+                    ]
+                    
+                    # 3. 执行批量更新
+                    cursor.executemany('''
+                        UPDATE subtitles 
+                        SET zh_text = ?, status = 'translated' 
+                        WHERE video_id = ? AND line_index = ?
+                    ''', update_params)
+                    
+                    self.logger.info(f"✅ [批量回填] 视频 {video_id} 的译文已存库 (共 {len(update_params)} 行)")
                 else:
                     self.logger.warning(f"⚠️ 收到未知的写操作请求: [{action}]，已忽略。")
                     continue

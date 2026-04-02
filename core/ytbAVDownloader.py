@@ -8,7 +8,7 @@ from utils.logger_manager import log_manager
 # 初始化专门针对下载任务的 Logger
 logger = log_manager.get_task_logger("DOWNLOADER")
 
-def download_step_video(video_id, song_name, output_path):
+def download_step_video(video_id, song_name):
     output_path = os.path.join('/Users/randy/Downloads/temp', f"{song_name}_{video_id}")
     logger.info(f"🎬 开始搜索并下载视频: {song_name} (ID: {video_id})")
     ydl_opts = {

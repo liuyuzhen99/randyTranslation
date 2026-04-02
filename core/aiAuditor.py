@@ -1,4 +1,6 @@
-import librosa
+import sqlite3
+import os
+import traceback
 import numpy as np
 import json
 from openai import OpenAI  # DeepSeek 兼容 OpenAI 格式
@@ -22,7 +24,18 @@ class MusicAuditor:
             logger.error(f"🚨 AI 客户端初始化失败: {e}")
             raise
 
-    def ai_audit_with_context(self, lyrics, vector_results):
+    def ai_audit_with_context(self, video_id, db_path,vector_results):
+        try:
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            cur.execute("SELECT title, lyrics FROM videos WHERE video_id=?", (video_id,))
+            video_info = cur.fetchall()
+            title, lyrics = video_info[0] if video_info else ("Unknown Title", "")
+            logger.info(f"✅ 成功从数据库读取歌曲:{title} video_id:{video_id} ")
+        except Exception as db_err:
+            logger.error(f"🚨 无法读取数据库video信息: {db_err}")
+            logger.error(traceback.format_exc())
+            return {"score": 0, "decision": "Reject", "reason": "数据库读取失败"}
         if not lyrics or len(lyrics) < 10:
             logger.warning("⚠️ 歌词文本过短或为空，跳过 AI 审计。")
             return {"score": 0, "decision": "Reject", "reason": "歌词内容不足以审计"}

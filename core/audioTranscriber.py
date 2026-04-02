@@ -114,7 +114,7 @@ class SeparateTranscriber:
                     english_texts_only.append(clean_text)
             logger.info(f"✅ 转录完成，共识别出 {len(english_texts_only)} 条字幕。")
             raw_lyrics = "\n".join(english_texts_only)
-            task_queue.put(("UPDATE_LYRICS", {
+            task_queue.put(("UPDATE_VIDEO_LYRICS", {
                 'video_id': video_id,
                 'lyrics': raw_lyrics
             }))
@@ -177,7 +177,7 @@ class SeparateTranscriber:
             word_density = None
             if lyrics_text:
                 # 简单的分词：按空格和标点符号分割
-                word_count = len(lyrics_text.split())
+                word_count = len(" ".join(lyrics_text).split())
                 word_density = word_count / duration_minutes if duration_minutes > 0 else 0
             
             audit_results = {
@@ -190,7 +190,7 @@ class SeparateTranscriber:
                 'video_id': video_id,
                 'title': title,
                 'bpm': round(tempo, 2),
-                'energy': round(energy, 4),
+                'energy': float(energy),
                 'word_density': round(word_density, 2)
             }))
             logger.info("✅ 已将更新视频分析结果任务推送到数据库队列。")
