@@ -235,7 +235,7 @@ class DatabaseConsumer(threading.Thread):
                     self.logger.info(f"✅ 视频处理结果已更新到数据库: {data['video_id']}")
                 elif action == "UPDATE_VIDEO_LYRICS":
                     cursor.execute('''
-                        UPDATE videos SET lyrics = ? WHERE video_id = ?
+                        UPDATE videos SET lyrics = ?, processed_status = 'transcribed' WHERE video_id = ?
                     ''', (data['lyrics'], data['video_id']))
                     self.logger.info(f"✅ 视频歌词已更新到数据库: video_id:{data['video_id']}")
                 elif action == "UPDATE_VIDEO_ANALYSIS":
@@ -243,7 +243,8 @@ class DatabaseConsumer(threading.Thread):
                         UPDATE videos SET 
                             bpm = ?, 
                             energy = ?, 
-                            word_density = ?
+                            word_density = ?,
+                            processed_status = 'analyzed'
                         WHERE video_id = ?
                     ''', (data['bpm'], data['energy'], data['word_density'], data['video_id']))
                     self.logger.info(f"✅ 视频分析结果已更新到数据库: 歌曲名称{data['title']} video_id:{data['video_id']}")
@@ -271,29 +272,53 @@ class DatabaseConsumer(threading.Thread):
                     self.logger.info(f"✨ Subtitles 已初始化: {video_id} (共 {len(insert_data)} 行)")
                 elif action == "UPDATE_CH_SUBTITLES":
                     # data 此时是一个由 Translator 传过来的 list, 包含多个 dict
-                    if not data or not isinstance(data, list):
+                    if not data :
                         self.logger.warning("⚠️ UPDATE_CH_SUBTITLES 接收到的数据格式非法或为空。")
                         continue
                     
                     # 1. 提取视频 ID（用于日志展示）
-                    video_id = data[0].get('video_id', 'Unknown')
-                    
+                    video_id = data['subtitles_to_db'][0].get('video_id', 'Unknown')
+                    srt_path = data['srt_path']
                     # 2. 构造 executemany 所需的参数元组列表
                     # SQL 语句中的顺序是：SET zh_text = ?, status = 'translated' WHERE video_id = ? AND line_index = ?
                     # 所以元组顺序必须是 (zh_text, video_id, line_index)
                     update_params = [
                         (item['zh_text'], item['video_id'], item['line_index'])
-                        for item in data
+                        for item in data['subtitles_to_db']
                     ]
-                    
                     # 3. 执行批量更新
                     cursor.executemany('''
                         UPDATE subtitles 
                         SET zh_text = ?, status = 'translated' 
                         WHERE video_id = ? AND line_index = ?
                     ''', update_params)
-                    
+                    cursor.execute('''
+                        UPDATE videos SET srt_path = ?, processed_status = 'translated' WHERE video_id = ?
+                    ''', (srt_path, video_id))
                     self.logger.info(f"✅ [批量回填] 视频 {video_id} 的译文已存库 (共 {len(update_params)} 行)")
+                elif action == "UPDATE_VIDEO_AUDIT":
+                    cursor.execute('''
+                        UPDATE videos SET 
+                            audit_score = ?, 
+                            processed_status = ?
+                        WHERE video_id = ?
+                    ''', (data['score'], data['decision'], data['video_id']))
+                    self.logger.info(f"✅ 视频审计结果已更新到数据库: 歌曲名称{data['title']} video_id:{data['video_id']}")
+                elif action == "UPDATE_VIDEO_DOWNLOAD":
+                    cursor.execute('''
+                        UPDATE videos SET 
+                            local_video_path = ?
+                        WHERE video_id = ?
+                    ''', (data['download_path'], data['video_id']))
+                    self.logger.info(f"✅ 视频下载状态已更新到数据库: {data['video_id']}")
+                elif action == "UPDATE_VIDEO_RENDER":
+                    cursor.execute('''
+                        UPDATE videos SET 
+                            final_video_path = ?, 
+                            processed_status = 'completed' 
+                        WHERE video_id = ?
+                    ''', (data['final_path'], data['video_id']))
+                    self.logger.info(f"✅ 视频渲染状态已更新到数据库: {data['video_id']}")
                 else:
                     self.logger.warning(f"⚠️ 收到未知的写操作请求: [{action}]，已忽略。")
                     continue

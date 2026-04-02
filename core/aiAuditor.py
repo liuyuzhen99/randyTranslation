@@ -24,7 +24,7 @@ class MusicAuditor:
             logger.error(f"🚨 AI 客户端初始化失败: {e}")
             raise
 
-    def ai_audit_with_context(self, video_id, db_path,vector_results):
+    def ai_audit_with_context(self, video_id, db_path,task_queue,vector_results):
         try:
             conn = sqlite3.connect(db_path)
             cur = conn.cursor()
@@ -83,11 +83,27 @@ class MusicAuditor:
             reason = audit_json.get('reason', None)
             
             logger.info(f"🤖 AI 审计完成：得分={score},理由={reason},决策={decision}")
+            task_queue.put(("UPDATE_VIDEO_AUDIT", {
+                'video_id': video_id,
+                'score': score,
+                'decision': decision
+            }))
+            logger.info("✅ 已将更新视频审计结果任务推送到数据库队列。")
             return audit_json
         except json.JSONDecodeError as je:
             logger.error(f"❌ AI 返回格式错误 (无法解析 JSON): {je}")
+            task_queue.put(("UPDATE_VIDEO_AUDIT", {
+                'video_id': video_id,
+                'score': 0,
+                'decision': "Failed"
+            }))
         except Exception as e:
             logger.error(f"🚨 DeepSeek 接口调用失败: {e}")
             logger.error(traceback.format_exc())
+            task_queue.put(("UPDATE_VIDEO_AUDIT", {
+                'video_id': video_id,
+                'score': 0,
+                'decision': "Failed"
+            }))
             
         return {"score": 0, "decision": "Error", "reason": "AI 审计接口异常"}

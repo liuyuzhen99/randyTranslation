@@ -203,7 +203,10 @@ class Translator:
                         'zh_text': cn_text
                     })
             # --- 步骤 D: 批量回填 SQLite ---
-            task_queue.put(("UPDATE_CH_SUBTITLES", subtitles_to_db))
+            task_queue.put(("UPDATE_CH_SUBTITLES", {
+                'srt_path': output_file,
+                'subtitles_to_db': subtitles_to_db
+            }))
             logger.info(f"✅ SRT 文件生成成功: {output_file}")
             return output_file
         except Exception as e:

@@ -8,7 +8,7 @@ from utils.logger_manager import log_manager
 # 初始化专门针对下载任务的 Logger
 logger = log_manager.get_task_logger("DOWNLOADER")
 
-def download_step_video(video_id, song_name):
+def download_step_video(video_id, task_queue, song_name):
     output_path = os.path.join('/Users/randy/Downloads/temp', f"{song_name}_{video_id}")
     logger.info(f"🎬 开始搜索并下载视频: {song_name} (ID: {video_id})")
     ydl_opts = {
@@ -23,15 +23,27 @@ def download_step_video(video_id, song_name):
             status = ydl.download('https://www.youtube.com/watch?v=' + video_id)
         # 检查文件是否真的生成了
         if status == 0 and os.path.exists(output_path):
+            task_queue.put(("UPDATE_VIDEO_DOWNLOAD", {
+                'video_id': video_id,
+                'download_path': output_path
+            }))
             logger.info(f"✅ 视频下载成功: {output_path}")
         else:
+            task_queue.put(("UPDATE_VIDEO_DOWNLOAD", {
+                'video_id': video_id,
+                'download_path': 'download_video_failed'
+            }))
             logger.warning(f"⚠️ 视频下载状态异常(Status:{status})，或文件未找到: {output_path}")
     except Exception as e:
+        task_queue.put(("UPDATE_VIDEO_DOWNLOAD", {
+            'video_id': video_id,
+            'download_path': 'download_video_failed'
+        }))
         logger.error(f"🚨 视频下载模块发生致命异常: {e}")
         logger.error(traceback.format_exc())
     return output_path
 
-def download_step_audio(video_id, song_name):
+def download_step_audio(video_id, task_queue, song_name):
     output_path = os.path.join('/Users/randy/Downloads/temp', f"{song_name}_{video_id}")
     logger.info(f"🎧 开始搜索并下载音频: {song_name} (ID: {video_id})")
     
@@ -72,14 +84,34 @@ def download_step_audio(video_id, song_name):
             # ydl.download 返回 0 表示成功，非 0 表示有错误但被 ignoreerrors 捕获了
             status = ydl.download(['https://www.youtube.com/watch?v=' + video_id])
             if status == 0 and os.path.exists(output_path):
+                task_queue.put(("UPDATE_VIDEO_DOWNLOAD", {
+                    'video_id': video_id,
+                    'download_path': output_path
+                }))
                 logger.info(f"✅ 音频处理完成: {output_path} video_id: {video_id}")
             elif status != 0:
+                task_queue.put(("UPDATE_VIDEO_DOWNLOAD", {
+                    'video_id': video_id,
+                    'download_path': 'download_audio_failed'
+                }))
                 logger.error(f"❌ {song_name} 下载失败，video_id: {video_id}，yt-dlp 返回错误代码: {status}")
             else:
+                task_queue.put(("UPDATE_VIDEO_DOWNLOAD", {
+                    'video_id': video_id,
+                    'download_path': 'download_audio_failed'
+                }))
                 logger.warning(f"⚠️ 下载完成但未在预期路径发现文件: {output_path}, video_id: {video_id}")
     except yt_dlp.utils.DownloadError as de:
+        task_queue.put(("UPDATE_VIDEO_DOWNLOAD", {
+            'video_id': video_id,
+            'download_path': 'download_audio_failed'
+        }))
         logger.error(f"🛑 yt-dlp 下载错误: {de}")
     except Exception as e:
+        task_queue.put(("UPDATE_VIDEO_DOWNLOAD", {
+            'video_id': video_id,
+            'download_path': 'download_audio_failed'
+        }))
         logger.error(f"🚨 下载模块发生未预料的致命异常: {e}")
         logger.error(traceback.format_exc())
     

@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import subprocess
 import traceback
 # 导入你的日志类实例
@@ -7,7 +8,17 @@ from utils.logger_manager import log_manager
 # 初始化专门针对视频合成任务的 Logger
 logger = log_manager.get_task_logger("VIDEO_RENDER")
 
-def burn_video(video_path, srt_path, final_path):
+def burn_video(video_id, db_path, task_queue):
+    try:
+        conn=sqlite3.connect(db_path)
+        cur=conn.cursor()
+        cur.execute("SELECT title, video_path, srt_path FROM videos WHERE video_id=?", (video_id,))
+        title, video_path, srt_path = cur.fetchone()
+        conn.close()
+    except Exception as e:
+        logger.error(f"❌ 数据库查询失败: {e}")
+        return False
+    final_path = f"/Users/randy/Downloads/temp/{title}_{video_id}_final.mp4"
     logger.info(f"🎬 开始视频压制任务: {os.path.basename(final_path)}")
     if not os.path.exists(video_path):
         logger.error(f"❌ 压制失败：原始视频不存在 -> {video_path}")
@@ -44,15 +55,31 @@ def burn_video(video_path, srt_path, final_path):
         
         if result.returncode == 0:
             logger.info(f"✅ 压制成功！成品已生成: {final_path}")
+            task_queue.put(("UPDATE_VIDEO_RENDER", {
+                'video_id': video_id,
+                'final_path': final_path
+            }))
             return True
         else:
+            task_queue.put(("UPDATE_VIDEO_RENDER", {
+                'video_id': video_id,
+                'final_path': 'render_failed'
+            })) 
             logger.error(f"❌ FFmpeg 压制进程返回非零状态码: {result.returncode}")
             logger.error(f"🔍 FFmpeg 错误详情: {result.stderr[-500:]}") # 只记录最后500字关键报错
             return False
             
     except FileNotFoundError:
+        task_queue.put(("UPDATE_VIDEO_RENDER", {
+            'video_id': video_id,
+            'final_path': 'render_failed'
+        })) 
         logger.error("🚨 系统未找到 ffmpeg 可执行程序，请检查是否已安装并加入 PATH。")
     except Exception as e:
+        task_queue.put(("UPDATE_VIDEO_RENDER", {
+            'video_id': video_id,
+            'final_path': 'render_failed'
+        }))
         logger.error(f"🚨 压制模块发生未预料异常: {e}")
         logger.error(traceback.format_exc())
         return False
