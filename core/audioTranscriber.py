@@ -12,6 +12,7 @@ import os
 import traceback
 import sqlite3
 from utils.logger_manager import log_manager
+from core.aiReviewer import MusicReviewer
 
 # 初始化专门针对转录任务的 Logger
 logger = log_manager.get_task_logger("TRANSCRIBER")
@@ -112,6 +113,12 @@ class SeparateTranscriber:
                     })
                     english_texts_only.append(clean_text)
             logger.info(f"✅ 转录完成，共识别出 {len(english_texts_only)} 条字幕。")
+            # --------- C. AI 校对（断句修正） ---------
+            reviewer = MusicReviewer(api_key=os.getenv("DEEPSEEK_API_KEY"),base_url=os.getenv("DEEPSEEK_BASE_URL"))
+            reviewed_segments = reviewer.audit_transcription_segments(full_data)
+            english_texts_only = [s['text'] for s in reviewed_segments]
+            # ---------------------------------------
+            logger.info(f"✅ AI 校对完成。最终保留 {len(english_texts_only)} 条字幕。")
             raw_lyrics = "\n".join(english_texts_only)
             task_queue.put(("UPDATE_VIDEO_LYRICS", {
                 'video_id': video_id,
@@ -121,7 +128,7 @@ class SeparateTranscriber:
             # 任务 2: ✨ 新增：初始化 subtitles 表（行级对齐数据）
             task_queue.put(("INIT_SUBTITLES", {
                 'video_id': video_id,
-                'segments': full_data  # 这里的 full_data 包含 start, end, text
+                'segments': reviewed_segments  # full_data # 这里的 full_data 包含 start, end, text
             }))
             logger.info("✅ 已将初始化字幕任务推送到数据库队列。")
             # --- C. 清理临时文件 ---

@@ -1,7 +1,7 @@
 .venv/
 __pycache__/
 .env
-*.db
+# *.db
 *.log
 *.sqlite
 *.sqlite3
