@@ -1,11 +1,22 @@
 import json
+import traceback
+from openai import OpenAI
 from utils.logger_manager import log_manager
 
 logger = log_manager.get_task_logger("AI_REVIEWER")
 
 class MusicReviewer:
-    def __init__(self, client):
-        self.client = client # 传入已经初始化好的 OpenAI/DeepSeek client
+    def __init__(self, base_url, api_key):
+        logger.info("🛠️ 正在初始化 MusicReviewer (DeepSeek)...")
+        try:
+            self.client = OpenAI(
+                api_key=api_key, 
+                base_url=base_url
+            ) 
+            logger.info(f"✅ AI 客户端连接成功。BaseURL: {base_url}")
+        except Exception as e:
+            logger.error(f"🚨 AI 客户端初始化失败: {e}")
+            raise
 
     def audit_transcription_segments(self, segments):
         """
@@ -79,4 +90,4 @@ class MusicReviewer:
         # 这里可以实现你提到的“审查翻译准确度”逻辑
         # 输入 chinese_map {1: "译文1", 2: "译文2"...}
         # 输出 润色后的 chinese_map
-        pass∏
+        pass

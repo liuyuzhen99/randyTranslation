@@ -8,7 +8,6 @@ from demucs import pretrained
 from demucs.apply import apply_model
 from demucs.pretrained import get_model
 from demucs.apply import apply_model
-import torch
 import os
 import traceback
 import sqlite3
