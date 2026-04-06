@@ -328,7 +328,7 @@ class DatabaseConsumer(threading.Thread):
                 self.logger.error(f"❌ 数据库写入操作 [{action}] 失败: {e}")
                 self.logger.error(traceback.format_exc())
                 conn.rollback()
-                break  # 非 locked 错误直接结束本次任务
+                # break  # 非 locked 错误直接结束本次任务
             finally:
                 self.task_queue.task_done()
         conn.close()
