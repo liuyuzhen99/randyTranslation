@@ -79,4 +79,4 @@ class MusicReviewer:
         # 这里可以实现你提到的“审查翻译准确度”逻辑
         # 输入 chinese_map {1: "译文1", 2: "译文2"...}
         # 输出 润色后的 chinese_map
-        pass∏
+        pass
