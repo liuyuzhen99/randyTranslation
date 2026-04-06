@@ -18,7 +18,7 @@ class MusicReviewer:
             logger.error(f"🚨 AI 客户端初始化失败: {e}")
             raise
 
-    def audit_transcription_segments(self, segments):
+    def audit_transcription_segments(self, segments, max_len=80):
         """
         输入: transcribe 产生的 full_data (list of dict)
         输出: 修正后的 full_data (list of dict)
@@ -31,11 +31,13 @@ class MusicReviewer:
         prompt = f"""你是一个专业的 Hip-hop 歌词校对专家。
         任务：识别下方由 Whisper 识别出的歌词中，由于断句错误导致语义破碎的行，并将它们合并。
         要求：
-        1. 仅当某几行在语法或逻辑上属于一句话时进行合并。
-        2. 严禁修改或增减单词，只能合并。
-        3. 返回 JSON 格式，包含合并后的索引范围和完整文本。
+        1. 除非样本中原本长度较长，否则合并后的单行长度不得超过{max_len}个字符。
+        2. 仅当某几行在语法或逻辑上属于一句话时进行合并。
+        3. 严禁修改或增减单词，只能合并。
+        4. 返回 JSON 格式，包含合并后的索引范围和完整文本。
         示例输出：{{"merges": [{{"start_idx": 3, "end_idx": 4, "new_text": "complete sentence"}}]}}
         如果没有需要合并的，返回 {{"merges": []}}。
+        
         
         待处理歌词：
         {raw_text_block}
