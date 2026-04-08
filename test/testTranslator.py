@@ -30,27 +30,25 @@ load_dotenv()  # 从 .env 文件加载环境变量
 # output_path = download_step_video("Poor Thang", "/Users/randy/Downloads/poor_thang_video.mp4")
 # burn_video(output_path,"/Users/randy/Downloads/poor_thang_output.srt","/Users/randy/Downloads/poor_thang_final.mp4")
 
-transcriber = SeparateTranscriber()
+# transcriber = SeparateTranscriber()
 # auditor = MusicAuditor(base_url=os.getenv("DEEPSEEK_BASE_URL"),api_key=os.getenv("DEEPSEEK_API_KEY"))
-# translator = Translator(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url=os.getenv("DEEPSEEK_BASE_URL"))
+translator = Translator(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url=os.getenv("DEEPSEEK_BASE_URL"))
 # full_data, english_texts = transcriber.transcribe_step("/Users/randy/Downloads/temp/Business & Personal.mp3")
 # print(english_texts)
 # result = auditor.ai_audit(english_texts)
 # output_file = translator.generate_bilingual_srt(full_data, english_texts, "/Users/randy/Downloads/poor_thang_output.srt")
 
 dataManager = DatabaseManager("data/music_data.db")
-dataConsumer = DatabaseConsumer(dataManager.db_path,dataManager.task_queue)
-dataConsumer.start()
 # transcriber = SeparateTranscriber()
 # musicVector = MusicVectorCommander(db_path="./data/chroma_db")  # 初始化向量数据库管理器
-# lyricsVector = TranslationVectorManager(db_path="./data/chroma_db")  # 初始化翻译向量数据库管理器
-# translator.generate_bilingual_srt('wiALRpD0Ztg', dataManager.task_queue, dataManager.db_path, lyricsVector)  # 直接在测试中调用翻译，并传入数据库路径和任务队列
+lyricsVector = TranslationVectorManager(db_path="./data/chroma_db")  # 初始化翻译向量数据库管理器
+translator.generate_bilingual_srt('3aIjM1YGOO8', dataManager.task_queue, dataManager.db_path, lyricsVector)  # 直接在测试中调用翻译，并传入数据库路径和任务队列
 # result = lyricsVector.query_song_level_style('wiALRpD0Ztg', dataManager.db_path, n_results=3)  # 测试基于当前视频的智能搜索功能
 
-download_step_audio('hjO6lIalk2E',dataManager.task_queue,"TKandz - NOW OR NEVER II (with Lil Baby) [Official Audio]")
+# download_step_audio('KHpA7_c3u1Y',dataManager.task_queue,"J. Cole - Bombs in the Ville/Hit the Gas (Official Audio)")
 # job_fill_youtube_ids(dataManager.db_path, dataManager.task_queue, batch_size=50)
 # job_rss_scanner_channelID(dataManager.db_path, dataManager.task_queue, 60, "UCnc6db-y3IU7CkT_yeVXdVg")
-full_data, english_texts = transcriber.transcribe_step('hjO6lIalk2E',dataManager.db_path, dataManager.task_queue)  # 直接在测试中调用转录，并传入数据库路径和任务队列
+# full_data, english_texts = transcriber.transcribe_step('KHpA7_c3u1Y',dataManager.db_path, dataManager.task_queue)  # 直接在测试中调用转录，并传入数据库路径和任务队列
 # transcriber.analyze_audio('wiALRpD0Ztg',dataManager.db_path, dataManager.task_queue, english_texts)  # 直接在测试中调用分析，并传入数据库路径和任务队列
 # musicVector.sync_to_vector_db(dataManager.db_path, "frYF8yvYZrc")  # 测试同步特定 video_id 的数据到向量数据库
 # result = musicVector.smart_search_by_current_video(dataManager.db_path, "wiALRpD0Ztg", 1)  # 测试基于当前视频的智能搜索功能
@@ -59,8 +57,6 @@ dataManager.task_queue.join()  # 这会阻塞主线程，直到消费者执行�
 # # --- 关键修改点 2: 发送退出信号 (Poison Pill) ---
 # # 虽然是 daemon，但手动发个 None 让它正常关闭连接更优雅
 dataManager.task_queue.put(None) 
-dataConsumer.join()
 
-print("✅ 数据同步完成，程序安全退出。") 
 
 # download_step_audio('wiALRpD0Ztg', "Kendrick Lamar - man at the garden (Official Audio)")

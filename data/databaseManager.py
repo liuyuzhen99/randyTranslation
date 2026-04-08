@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import threading
 import queue
@@ -6,58 +7,6 @@ from dotenv import load_dotenv
 import traceback
 from utils.logger_manager import log_manager
 # from apscheduler.schedulers.background import BackgroundScheduler
-
-# ==========================================
-# 1. 数据库基础操作（放在主线程初始化）
-# ==========================================
-
-# def init_db(db_name):
-#     logger.info(f"🏗️ 正在初始化数据库: {db_name}")
-#     try:
-#         conn = sqlite3.connect(db_name)
-#         cursor = conn.cursor()
-        
-#         # 1. 创建 artists 表 (保存艺人基础信息)
-#         cursor.execute('''
-#             CREATE TABLE IF NOT EXISTS artists (
-#                 spotify_id TEXT PRIMARY KEY,
-#                 name TEXT,
-#                 yt_channel_id TEXT,
-#                 status TEXT DEFAULT 'active',
-#                 is_manual INTEGER DEFAULT 0,
-#                 last_sync_at DATETIME,
-#                 last_yt_search_at DATETIME
-#             )
-#         ''')
-#         # 建立索引优化查询性能
-#         cursor.execute('CREATE INDEX IF NOT EXISTS idx_status_yt ON artists(status, yt_channel_id);')
-
-#         # 2. 创建 videos 表 (保存扫描到的 MV 记录)
-#         # 使用 video_id 作为主键，确保同一个视频不会被重复插入
-#         cursor.execute('''
-#             CREATE TABLE IF NOT EXISTS videos (
-#                 video_id TEXT PRIMARY KEY,
-#                 spotify_id TEXT,
-#                 title TEXT,
-#                 link TEXT,
-#                 published_at DATETIME,
-#                 processed_status TEXT DEFAULT 'new', -- 状态：new(新发现), processing(处理中), completed(已完成), skipped(跳过)
-#                 FOREIGN KEY (spotify_id) REFERENCES artists (spotify_id)
-#             )
-#         ''')
-#         # 为视频发布时间建立索引，方便查找“近两周”的数据
-#         cursor.execute('CREATE INDEX IF NOT EXISTS idx_published_at ON videos(published_at);')
-#         # 为处理状态建立索引，方便翻译 Agent 快速捞取新任务
-#         cursor.execute('CREATE INDEX IF NOT EXISTS idx_proc_status ON videos(processed_status);')
-
-#         conn.commit()
-#         conn.close()
-#         logger.info("✅ 数据库架构(Schema)初始化完成。")
-#     except Exception as e:
-#         logger.critical(f"🚨 数据库初始化致命错误: {e}")
-#         logger.error(traceback.format_exc())
-#         raise
-
 
 class DatabaseManager:
     """
@@ -148,6 +97,7 @@ class DatabaseConsumer(threading.Thread):
 
     def run(self):
         self.logger.info("🚀 生产流水线守护线程已就绪...")
+        # self.logger.info(f"🚀 线程启动 | PID: {os.getpid()} | Thread ID: {threading.get_ident()}")
         try:
             conn = sqlite3.connect(self.db_name, timeout=30)
             conn.execute('PRAGMA journal_mode=WAL;') # 必开，支持并发读
@@ -333,65 +283,3 @@ class DatabaseConsumer(threading.Thread):
                 self.task_queue.task_done()
         conn.close()
         return None
-
-# ==========================================
-# 4. 主程序入口
-# ==========================================
-'''
-if __name__ == "__main__":
-    DB_FILE = "music_agent.db"
-    TASK_QUEUE = queue.Queue()
-
-    # 初始化表
-    init_db(DB_FILE)
-
-    # 启动数据库写线程
-    db_writer = DatabaseConsumer(DB_FILE, TASK_QUEUE)
-    db_writer.start()
-
-    # 启动调度器
-    scheduler = BackgroundScheduler()
-    
-   # DB_FILE = os.getenv("DB_NAME")
-# TASK_QUEUE = queue.Queue()
-
-# # 初始化表
-# init_db(DB_FILE)
-
-# # 启动数据库写线程
-# db_writer = DatabaseConsumer(DB_FILE, TASK_QUEUE)
-# db_writer.daemon = False
-# db_writer.start()
-
-# job_sync_spotify(TASK_QUEUE) # 再同步 Spotify，触发全量更新和潜在的 ID 变更
-# job_fill_youtube_ids(DB_FILE, TASK_QUEUE) # 先填充 ID，确保后续扫描有数据
-# job_rss_scanner(DB_FILE, TASK_QUEUE)
-# print("⏳ 正在写入数据库，请勿关闭...")
-# print("⏳ 正在等待队列清空...")
-# TASK_QUEUE.join()  # 这会阻塞主线程，直到消费者执行了足够多次的 task_done()
-
-# # --- 关键修改点 2: 发送退出信号 (Poison Pill) ---
-# # 虽然是 daemon，但手动发个 None 让它正常关闭连接更优雅
-# TASK_QUEUE.put(None) 
-# db_writer.join()
-
-# print("✅ 数据同步完成，程序安全退出。") # 设定每月 1 号执行同步
-    scheduler.add_job(job_sync_spotify, 'cron', day=1, hour=3, args=[TASK_QUEUE])
-    
-    # 设定每周一执行 ID 填充 (每次只抓 20 个)
-    scheduler.add_job(job_fill_youtube_ids, 'cron', day_of_week='mon', hour=4, args=[DB_FILE, TASK_QUEUE, 20])
-    
-    scheduler.start()
-    
-    print("🌟 Music Agent 自动同步服务已启动 (按 Ctrl+C 退出)")
-    
-    try:
-        # 保持主进程活跃
-        while True:
-            time.sleep(1)
-    except (KeyboardInterrupt, SystemExit):
-        print("👋 正在关闭服务...")
-        scheduler.shutdown()
-        TASK_QUEUE.put(None) # 关闭消费者线程
-'''
-

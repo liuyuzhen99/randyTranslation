@@ -1,9 +1,12 @@
 # from llama_cpp import Llama
 import re
+import os
 import sqlite3
 import traceback
 from openai import OpenAI
+import json
 from data.translatorVectorDatabase import TranslationVectorManager
+from core.aiReviewer import MusicReviewer
 # 导入你的日志类实例
 from utils.logger_manager import log_manager
 
@@ -104,8 +107,27 @@ class Translator:
         dynamic_few_shot = ""
         if references:
             dynamic_few_shot = "【风格参考范例（请模仿其翻译质感与遣词风格）】:\n"
+            # for i, ref in enumerate(references):
+            #     dynamic_few_shot += f"范例 {i+1} (来自 {ref['artist']}):\n原文: {ref['en']}\n译文: {ref['zh']}\n---\n"
             for i, ref in enumerate(references):
-                dynamic_few_shot += f"范例 {i+1} (来自 {ref['artist']}):\n原文: {ref['en']}\n译文: {ref['zh']}\n---\n"
+                dynamic_few_shot += f"范例 {i+1} (来自 {ref['artist']}):\n"
+                
+                # 假设 ref['en'] 和 ref['zh'] 是多行文本，我们将其按行拆分并打上标签
+                en_lines = [line.strip() for line in ref['en'].split('\n') if line.strip()]
+                zh_lines = [line.strip() for line in ref['zh'].split('\n') if line.strip()]
+                
+                # 确保中英行数一致，防止参考范例本身就错乱
+                min_lines = min(len(en_lines), len(zh_lines))
+                
+                # 构建模仿兜底逻辑的 Input/Output 格式
+                example_block = ""
+                for idx in range(min_lines):
+                    # 这里可以使用 L_ref 和 R_ref 避免与当前任务的行号混淆
+                    # 或者直接模仿兜底使用 L1, R1...
+                    example_block += f"Input: <L{idx+1}>{en_lines[idx]}</L{idx+1}>\n"
+                    example_block += f"Output: <R{idx+1}>{zh_lines[idx]}</R{idx+1}>\n"
+                
+                dynamic_few_shot += f"{example_block}---\n"
         else:
             # 兜底逻辑
             dynamic_few_shot = """
@@ -129,6 +151,9 @@ class Translator:
             #     logger.warning(f"📏 歌词量较大 (约 {estimated_tokens:.0f} tokens)，可能接近 n_ctx 限制。")
             prompt = f"""你是一个专业的 Hip-hop 中文翻译官，能够准确理解并翻译嘻哈、R&B音乐，准确且地道不突兀，十分吸引听众。请将以下歌词翻译成中文。
             要求：
+            【硬性要求，必须遵守！！！】你必须严格遵守 1:1 映射。
+            【硬性要求，必须遵守！！！】输入是 <L52>...</L52>，输出就必须截止于 <R52>...</R52>。
+            【硬性要求，必须遵守！！！】严禁生成任何不在输入列表中的索引号。 > 每一行 <Rn> 必须是对 <Ln> 内容的完整且唯一的翻译。
             - 逐行翻译下方 XML 标签内的内容。
             - 必须以 <R{{i}}>中文翻译</R{{i}}> 的格式返回。
             - 严禁合并行
@@ -170,15 +195,69 @@ class Translator:
             for idx_str, text in patterns:
                 chinese_map[int(idx_str)] = text.strip()
             logger.info(f"🔍 正在校验对齐情况... 收到译文: {len(chinese_map)} 行")
-            # translated_content = response['choices'][0]['message']['content']
             
-            # 解析模型返回的中文（假设模型按行返回）
-            # 简单的清理逻辑：去掉序号，只留文本
-            # chinese_lines = []
-            # for line in translated_content.strip().split('\n'):
-            #     # 去掉类似 "1: " 或 "1. " 的前缀
-            #     clean_line = re.sub(r'^\d+[:.、\s]+', '', line)
-            #     chinese_lines.append(clean_line)
+            # --- 步骤 B.5: 全文 Review 环节 ---
+            if chinese_map:
+                reviewer = MusicReviewer(api_key=os.getenv("DEEPSEEK_API_KEY"),base_url=os.getenv("DEEPSEEK_BASE_URL"))
+                logger.info("🎬 正在构造全文语境以供 Reviewer 审阅...")
+                
+                # 1. 构造包含时间轴和对照的文本流
+                virtual_srt_blocks = []
+                for i, item in enumerate(full_data, start=1):
+                    cn_text = chinese_map.get(i, "")
+                    # 重点：加入原文，但明确标注这是不可移动的物理行
+                    block = f"[[BLOCK_ID_{i}]]\nSOURCE_EN: {item['text']}\nCURRENT_ZH: {cn_text}"
+                    virtual_srt_blocks.append(block)
+                full_srt_text = "\n\n".join(virtual_srt_blocks)
+                
+                # 2. 调用 Reviewer 获得修正建议
+                adjustments = reviewer.audit_translation_map(full_srt_text)
+                logger.info(f"🔍 Reviewer 建议修正 {len(adjustments)} 处。正在应用修正...")
+                # logger.info(f"修正详情: {json.dumps(adjustments, ensure_ascii=False, indent=2)}")
+                effective_changes = 0
+                if not isinstance(adjustments, list):
+                    logger.error(f"🚨 [Reviewer] 返回的 adjustments 格式异常: {type(adjustments)}")
+                    return None
+                for adj in adjustments:
+                    try:
+                        # --- 核心修复：类型检查 ---
+                        if not isinstance(adj, dict):
+                            # 如果 AI 返回的是 [1, 2, 3] 这种格式，adj 就是 int
+                            logger.warning(f"⚠️ [跳过] 修正项不是字典对象: {adj} (类型: {type(adj)})")
+                            continue
+
+                        # 确保必要的 key 都在
+                        if 'index' not in adj or 'fixed_zh' not in adj:
+                            continue
+                        idx = int(adj['index'])
+                        new_zh = adj['fixed_zh'].strip().replace('\n', ' ') # 强制禁止换行符
+                        old_zh = chinese_map.get(idx, "").strip()
+
+                        # 1. 物理位置校验
+                        if idx not in chinese_map:
+                            logger.warning(f"⚠️ [跳过] Reviewer 返回了不存在的索引: {idx}")
+                            continue
+
+                        # 2. 实质性变化校验
+                        if old_zh == new_zh:
+                            continue
+
+                        # 3. 长度溢出校验（防止 AI 把两句并一句导致变长）
+                        if len(new_zh) > len(old_zh) + 15 and len(new_zh) > 30:
+                            logger.warning(f"⚠️ [拦截] 行 {idx} 疑似被 AI 合并了后续内容，长度异常。")
+                            continue
+
+                        # 执行回填
+                        logger.info(f"🔧 [Review修正] 行 {idx} | 理由: {adj.get('reason', '语义优化')}")
+                        logger.info(f"   OLD: {old_zh}")
+                        logger.info(f"   NEW: {new_zh}")
+                        
+                        chinese_map[idx] = new_zh
+                        effective_changes += 1
+                    except Exception as e:
+                        logger.error(f"❌ 解析 Review 修正条目失败: {e}")
+
+                logger.info(f"✅ 审计应用完毕，实际有效修正: {effective_changes} 处。")
 
             # --- 步骤 C: 组合生成 SRT ---
             subtitles_to_db = []
