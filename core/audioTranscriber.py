@@ -19,11 +19,11 @@ logger = log_manager.get_task_logger("TRANSCRIBER")
 
 class SeparateTranscriber:
     def __init__(self):
-        logger.info("🏗️ 正在初始化转录核心模型 (Whisper Medium + Demucs)...")
+        logger.info("🏗️ 正在初始化转录核心模型 (Whisper Large-v3-turbo + Demucs)...")
         try:
-            self.whisper = WhisperModel("medium", device="cpu", compute_type="int8")
+            self.whisper = WhisperModel("large-v3-turbo", device="cpu", compute_type="int8") # 降级则使用medium
             # model = pretrained.get_model("htdemucs_ft")   # 推荐：人声效果最好
-            self.model = pretrained.get_model("htdemucs")    # 如果想更快，改成这个
+            self.model = pretrained.get_model("hdemucs_mmi")    # 如果想更快，改成这个htdemucs
             self.model.eval()
             self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
             self.model.to(self.device)
