@@ -11,6 +11,7 @@ import traceback
 # from core.hipHopProducer import HipHopAutoProject 
 # 为了演示，我假设它就在当前文件中或已正确导入
 
+from api.config import validate_startup_env
 from utils.logger_manager import LogManager
 
 # 获取一个系统的全局 logger
@@ -93,6 +94,10 @@ def run_production_pipeline(task_id: str, song_name: str):
         logger.info(f"[Task:{task_id}] 🏁 后台流水线执行完毕")
 
 # --- API 路由 ---
+
+@app.on_event("startup")
+def validate_environment() -> None:
+    validate_startup_env()
 
 @app.post("/create_task", response_model=TaskResponse)
 async def create_task(request: TaskRequest, background_tasks: BackgroundTasks):
