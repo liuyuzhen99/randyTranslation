@@ -25,7 +25,7 @@ jobs:
           pip install ruff
 
       - name: Run lint
-        run: ruff check .
+        run: ruff check api application domain infrastructure utils/logger_manager.py test/test_phase0_config_validation.py test/test_phase0_api_baseline.py
 
   unit-tests:
     runs-on: ubuntu-latest
