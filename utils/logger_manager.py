@@ -1,7 +1,7 @@
-import os
-from pathlib import Path
 import logging
 from logging.handlers import RotatingFileHandler
+import os
+from pathlib import Path
 
 class TaskIdFilter(logging.Filter):
     """确保每条日志都有 task_id 属性，防止 Formatter 报错"""
@@ -59,7 +59,7 @@ class LogManager:
         # self.base_logger.addHandler(fh)
         # self.base_logger.addFilter(TaskIdFilter())
         
-        self._initialized = True
+        LogManager._initialized = True
 
     @staticmethod
     def _resolve_log_file(log_file):

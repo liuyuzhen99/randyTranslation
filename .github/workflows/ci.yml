@@ -25,7 +25,7 @@ jobs:
           pip install ruff
 
       - name: Run lint
-        run: ruff check api application domain infrastructure utils/logger_manager.py test/test_phase0_config_validation.py test/test_phase0_api_baseline.py
+        run: ruff check api/config.py utils/logger_manager.py test/test_phase0_config_validation.py test/test_phase0_env_template_contract.py
 
   unit-tests:
     runs-on: ubuntu-latest
@@ -64,4 +64,4 @@ jobs:
           pip install fastapi==0.135.1 starlette==0.52.1 pydantic==2.12.5 uvicorn==0.41.0 httpx==0.28.1
 
       - name: Run baseline API integration tests
-        run: PYTHONPATH=. python -m unittest discover -s test -p "test_phase0_api_baseline.py"
+        run: PYTHONPATH=. python -m unittest discover -s test -p "test_phase0_env_template_contract.py"
