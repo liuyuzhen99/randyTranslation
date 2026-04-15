@@ -312,15 +312,37 @@ class SQLAlchemyOutboxRepository(OutboxRepository):
                 .scalars()
                 .all()
             )
-            return [
-                OutboxEvent(
-                    event_id=row.event_id,
-                    topic=row.topic,
-                    payload=row.payload,
-                    status=row.status,
-                    aggregate_id=row.aggregate_id,
-                    dedupe_key=row.dedupe_key,
-                    correlation_id=row.correlation_id,
-                )
-                for row in rows
-            ]
+            return [self._to_entity(row) for row in rows]
+
+    def get(self, event_id: str) -> OutboxEvent | None:
+        with self.session_factory.session_scope() as session:
+            row = session.get(OutboxModel, event_id)
+            if row is None:
+                return None
+            return self._to_entity(row)
+
+    def update(self, event: OutboxEvent) -> None:
+        with self.session_factory.session_scope() as session:
+            row = session.get(OutboxModel, event.event_id)
+            if row is None:
+                self.add(event)
+                return
+
+            row.topic = event.topic
+            row.payload = event.payload
+            row.status = event.status
+            row.aggregate_id = event.aggregate_id
+            row.dedupe_key = event.dedupe_key
+            row.correlation_id = event.correlation_id
+
+    @staticmethod
+    def _to_entity(row: OutboxModel) -> OutboxEvent:
+        return OutboxEvent(
+            event_id=row.event_id,
+            topic=row.topic,
+            payload=row.payload,
+            status=row.status,
+            aggregate_id=row.aggregate_id,
+            dedupe_key=row.dedupe_key,
+            correlation_id=row.correlation_id,
+        )

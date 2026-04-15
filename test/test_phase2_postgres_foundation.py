@@ -12,6 +12,8 @@ from domain.exceptions import InvalidJobTransitionError
 from domain.job_lifecycle import transition_job, validate_job_transition
 from domain.time_utils import utc_now
 from application.services.job_service import JobService
+from application.services.outbox_dispatcher import OutboxDispatcher
+from application.services.phase2_reconcile_service import Phase2ReconcileService
 from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
 from infrastructure.persistence.sqlalchemy_models import Base
 from infrastructure.persistence.sqlalchemy_repositories import (
@@ -23,6 +25,7 @@ from infrastructure.persistence.sqlalchemy_repositories import (
     SQLAlchemySubtitleRepository,
     SQLAlchemyVideoRepository,
 )
+from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
 
 
 class Phase2PostgresFoundationTests(unittest.TestCase):
@@ -181,6 +184,96 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
             self.assertEqual(SQLAlchemyJobRepository(session_factory).get(job.job_id).song_name, "song")
             self.assertEqual(len(SQLAlchemyJobEventRepository(session_factory).list_for_job(job.job_id)), 1)
             self.assertEqual(len(SQLAlchemyOutboxRepository(session_factory).list_pending()), 1)
+
+    def test_reconcile_service_reports_consistent_shadow_write_state(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory.create_schema()
+            primary_repository = SQLAlchemyJobRepository(session_factory)
+            shadow_service = Phase2ShadowWriteService(session_factory)
+            job_service = JobService(primary_repository, shadow_write_service=shadow_service)
+            job = job_service.create_job("song")
+
+            report = Phase2ReconcileService(primary_repository, session_factory).generate_report()
+
+            self.assertTrue(report.is_consistent)
+            self.assertEqual(report.primary_job_count, 1)
+            self.assertEqual(report.shadow_job_count, 1)
+            self.assertEqual(report.pending_outbox_count, 1)
+            self.assertEqual(report.shadow_job_event_count, 1)
+            self.assertEqual(report.missing_job_ids_in_shadow, [])
+            self.assertNotEqual(job.job_id, "")
+
+    def test_reconcile_service_reports_missing_shadow_jobs(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            primary_repository = InMemoryJobRepository()
+            primary_repository.create(Job(job_id="job-missing", song_name="song"))
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory.create_schema()
+
+            report = Phase2ReconcileService(primary_repository, session_factory).generate_report()
+
+            self.assertFalse(report.is_consistent)
+            self.assertEqual(report.missing_job_ids_in_shadow, ["job-missing"])
+
+    def test_outbox_dispatcher_marks_events_published(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory.create_schema()
+            outbox_repository = SQLAlchemyOutboxRepository(session_factory)
+            outbox_repository.add(
+                OutboxEvent(
+                    event_id="outbox-publish-1",
+                    topic="job.lifecycle",
+                    payload='{"hello":"world"}',
+                    status=OutboxStatus.PENDING,
+                    dedupe_key="dispatch-1",
+                    correlation_id="job-1",
+                )
+            )
+
+            published_calls = []
+
+            class Publisher:
+                def publish(self, topic: str, payload: str, correlation_id=None) -> None:
+                    published_calls.append((topic, payload, correlation_id))
+
+            summary = OutboxDispatcher(outbox_repository, Publisher()).dispatch_pending()
+
+            self.assertEqual(summary, {"published": 1, "failed": 0})
+            self.assertEqual(len(published_calls), 1)
+            self.assertEqual(
+                outbox_repository.get("outbox-publish-1").status,
+                OutboxStatus.PUBLISHED,
+            )
+
+    def test_outbox_dispatcher_marks_failures(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory.create_schema()
+            outbox_repository = SQLAlchemyOutboxRepository(session_factory)
+            outbox_repository.add(
+                OutboxEvent(
+                    event_id="outbox-fail-1",
+                    topic="job.lifecycle",
+                    payload='{"hello":"world"}',
+                    status=OutboxStatus.PENDING,
+                    dedupe_key="dispatch-fail-1",
+                    correlation_id="job-1",
+                )
+            )
+
+            class FailingPublisher:
+                def publish(self, topic: str, payload: str, correlation_id=None) -> None:
+                    raise RuntimeError("network down")
+
+            summary = OutboxDispatcher(outbox_repository, FailingPublisher()).dispatch_pending()
+
+            self.assertEqual(summary, {"published": 0, "failed": 1})
+            self.assertEqual(
+                outbox_repository.get("outbox-fail-1").status,
+                OutboxStatus.FAILED,
+            )
 
     def test_job_service_shadow_writes_initial_records(self):
         with tempfile.TemporaryDirectory() as temp_root:

@@ -29,6 +29,8 @@ Phase 2 的目标是把当前项目从 Phase 1 的“分层架构 + 临时持久
 - 数据库配置入口与 Session Factory 注入路径
 - Alembic 初始化与首个 migration
 - Job / JobEvent / Outbox 的最小 shadow write 路径
+- shadow write reconcile/report 原型
+- outbox dispatcher 原型
 - Phase 2 foundation 测试
 
 这意味着后面的工作不用再从“抽象不清楚”的状态开始，可以直接往 PostgreSQL 和 migration 管理推进。
@@ -48,12 +50,11 @@ Phase 2 的目标是把当前项目从 Phase 1 的“分层架构 + 临时持久
 
 ### 2. 强化 `job_events` / outbox / shadow write
 
-当前已经有最小闭环，但还需要继续增强：
+当前已经有最小闭环、基础 reconcile 和 dispatcher 原型，但还需要继续增强：
 
-- 为 shadow write 增加 reconcile 能力
 - 明确失败重试和补偿策略
 - 逐步扩大 shadow write 范围
-- 为后续 dispatcher 留出稳定接口
+- 为后续 dispatcher 接 RabbitMQ 留出稳定接口
 
 ### 3. 设计 shadow write 的 reconciliation 机制
 
@@ -115,7 +116,8 @@ Phase 2 的数据库设计要天然支撑：
 
 - Phase 2 在真实 PostgreSQL 实例上跑通
 - Alembic migration 在 clean DB 上完成 upgrade/downgrade
-- shadow write 具备 reconcile 报告能力
+- shadow write reconcile 可以输出可消费报告
+- outbox dispatcher 可以接入真实 publisher
 - Job / JobEvent / Outbox 的事务边界更清晰
 - CI 继续覆盖并扩展 Phase 2 tests
 
@@ -129,8 +131,8 @@ Phase 2 现在已经不再是纯设计阶段，而是已经进入“基础模型
 
 1. PostgreSQL 实例接入与配置清理
 2. Alembic 在真实 DB 上验证
-3. shadow write reconcile
-4. outbox dispatcher 原型
+3. reconcile 报告持久化或定时任务化
+4. outbox dispatcher 接真实 publisher
 5. Phase 2 到 Phase 3 的消息发布桥接
 
 这样推进，风险最低，也最符合这个项目对一致性和可演进性的要求。

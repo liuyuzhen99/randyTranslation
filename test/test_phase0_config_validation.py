@@ -3,11 +3,15 @@ from tempfile import TemporaryDirectory
 
 from api.config import (
     create_job_repository,
+    create_phase2_outbox_dispatcher,
+    create_phase2_reconcile_service,
     create_phase2_shadow_write_service,
     create_sqlalchemy_session_factory,
     load_runtime_settings,
     validate_startup_env,
 )
+from application.services.outbox_dispatcher import OutboxDispatcher
+from application.services.phase2_reconcile_service import Phase2ReconcileService
 from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
 from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemySessionFactory
@@ -35,6 +39,23 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         self.assertEqual(settings.job_repository_sqlite_path, "")
         self.assertEqual(settings.database_url, "")
         self.assertFalse(settings.phase2_shadow_write_enabled)
+        self.assertFalse(settings.phase2_reconcile_enabled)
+        self.assertFalse(settings.phase2_outbox_dispatch_enabled)
+
+    def test_load_runtime_settings_builds_database_url_from_postgres_parts(self):
+        settings = load_runtime_settings(
+            {
+                "POSTGRES_HOST": "localhost",
+                "POSTGRES_PORT": "5432",
+                "POSTGRES_DB": "randy_translation",
+                "POSTGRES_USER": "app",
+                "POSTGRES_PASSWORD": "secret",
+            }
+        )
+        self.assertEqual(
+            settings.database_url,
+            "postgresql+psycopg://app:secret@localhost:5432/randy_translation",
+        )
 
     def test_load_runtime_settings_defaults_sqlite_path_when_backend_enabled(self):
         settings = load_runtime_settings({"JOB_REPOSITORY_BACKEND": "sqlite"})
@@ -78,6 +99,44 @@ class Phase0ConfigValidationTests(unittest.TestCase):
             }
         )
         self.assertIsInstance(service, Phase2ShadowWriteService)
+
+    def test_create_phase2_reconcile_service_requires_database_url(self):
+        with self.assertRaises(RuntimeError):
+            create_phase2_reconcile_service(
+                InMemoryJobRepository(),
+                {"PHASE2_RECONCILE_ENABLED": "true"},
+            )
+
+    def test_create_phase2_reconcile_service_builds_service(self):
+        service = create_phase2_reconcile_service(
+            InMemoryJobRepository(),
+            {
+                "PHASE2_RECONCILE_ENABLED": "true",
+                "DATABASE_URL": "sqlite:///:memory:",
+            },
+        )
+        self.assertIsInstance(service, Phase2ReconcileService)
+
+    def test_create_phase2_outbox_dispatcher_requires_database_url(self):
+        with self.assertRaises(RuntimeError):
+            create_phase2_outbox_dispatcher(
+                publisher=object(),
+                environ={"PHASE2_OUTBOX_DISPATCH_ENABLED": "true"},
+            )
+
+    def test_create_phase2_outbox_dispatcher_builds_dispatcher(self):
+        class Publisher:
+            def publish(self, topic: str, payload: str, correlation_id=None) -> None:
+                return None
+
+        dispatcher = create_phase2_outbox_dispatcher(
+            publisher=Publisher(),
+            environ={
+                "PHASE2_OUTBOX_DISPATCH_ENABLED": "true",
+                "DATABASE_URL": "sqlite:///:memory:",
+            },
+        )
+        self.assertIsInstance(dispatcher, OutboxDispatcher)
 
 
 if __name__ == "__main__":

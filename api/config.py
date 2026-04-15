@@ -5,10 +5,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from application.services.outbox_dispatcher import OutboxDispatcher
+from application.services.phase2_reconcile_service import Phase2ReconcileService
 from domain.repositories import JobRepository
 from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
 from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
-from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemySessionFactory
+from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyOutboxRepository, SQLAlchemySessionFactory
 from infrastructure.persistence.sqlite_repositories import SQLiteJobRepository
 
 # Current runtime requirements (Phase 0 fail-fast scope).
@@ -25,6 +27,8 @@ KNOWN_ENV_VARS: tuple[str, ...] = (
     "JOB_REPOSITORY_SQLITE_PATH",
     "PHASE2_SHADOW_WRITE_ENABLED",
     "PHASE2_AUTO_CREATE_SCHEMA",
+    "PHASE2_RECONCILE_ENABLED",
+    "PHASE2_OUTBOX_DISPATCH_ENABLED",
     "MEDIA_TEMP_ROOT",
     "MEDIA_OUTPUT_ROOT",
     "SPOTIPY_CLIENT_ID",
@@ -69,6 +73,8 @@ class AppRuntimeSettings:
     database_url: str = ""
     phase2_shadow_write_enabled: bool = False
     phase2_auto_create_schema: bool = False
+    phase2_reconcile_enabled: bool = False
+    phase2_outbox_dispatch_enabled: bool = False
 
 
 def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntimeSettings:
@@ -96,6 +102,29 @@ def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntim
         "yes",
         "on",
     }
+    reconcile_enabled = source.get("PHASE2_RECONCILE_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    outbox_dispatch_enabled = source.get("PHASE2_OUTBOX_DISPATCH_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not database_url:
+        postgres_host = source.get("POSTGRES_HOST", "").strip()
+        postgres_port = source.get("POSTGRES_PORT", "").strip() or "5432"
+        postgres_db = source.get("POSTGRES_DB", "").strip()
+        postgres_user = source.get("POSTGRES_USER", "").strip()
+        postgres_password = source.get("POSTGRES_PASSWORD", "").strip()
+        if postgres_host and postgres_db and postgres_user and postgres_password:
+            database_url = (
+                f"postgresql+psycopg://{postgres_user}:{postgres_password}"
+                f"@{postgres_host}:{postgres_port}/{postgres_db}"
+            )
 
     return AppRuntimeSettings(
         job_repository_backend=backend,
@@ -103,6 +132,8 @@ def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntim
         database_url=database_url,
         phase2_shadow_write_enabled=shadow_write_enabled,
         phase2_auto_create_schema=auto_create_schema,
+        phase2_reconcile_enabled=reconcile_enabled,
+        phase2_outbox_dispatch_enabled=outbox_dispatch_enabled,
     )
 
 
@@ -142,5 +173,37 @@ def create_phase2_shadow_write_service(
     if session_factory is None:
         raise RuntimeError(
             "PHASE2_SHADOW_WRITE_ENABLED requires DATABASE_URL to be configured."
-        )
+    )
     return Phase2ShadowWriteService(session_factory)
+
+
+def create_phase2_reconcile_service(
+    primary_job_repository: JobRepository,
+    environ: Mapping[str, str] | None = None,
+    runtime_settings: AppRuntimeSettings | None = None,
+) -> Phase2ReconcileService | None:
+    settings = runtime_settings or load_runtime_settings(environ)
+    if not settings.phase2_reconcile_enabled:
+        return None
+    session_factory = create_sqlalchemy_session_factory(environ, settings)
+    if session_factory is None:
+        raise RuntimeError(
+            "PHASE2_RECONCILE_ENABLED requires DATABASE_URL to be configured."
+        )
+    return Phase2ReconcileService(primary_job_repository, session_factory)
+
+
+def create_phase2_outbox_dispatcher(
+    publisher,
+    environ: Mapping[str, str] | None = None,
+    runtime_settings: AppRuntimeSettings | None = None,
+) -> OutboxDispatcher | None:
+    settings = runtime_settings or load_runtime_settings(environ)
+    if not settings.phase2_outbox_dispatch_enabled:
+        return None
+    session_factory = create_sqlalchemy_session_factory(environ, settings)
+    if session_factory is None:
+        raise RuntimeError(
+            "PHASE2_OUTBOX_DISPATCH_ENABLED requires DATABASE_URL to be configured."
+        )
+    return OutboxDispatcher(SQLAlchemyOutboxRepository(session_factory), publisher)

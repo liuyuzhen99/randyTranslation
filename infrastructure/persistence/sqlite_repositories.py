@@ -280,6 +280,30 @@ class SQLiteOutboxRepository(_SQLiteRepositoryMixin, OutboxRepository):
             ).fetchall()
             return [OutboxEvent(**dict(row)) for row in rows]
 
+    def get(self, event_id: str) -> Optional[OutboxEvent]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT event_id, topic, payload, status FROM outbox WHERE event_id=?",
+                (event_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return OutboxEvent(**dict(row))
+
+    def update(self, event: OutboxEvent) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO outbox (event_id, topic, payload, status)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    topic=excluded.topic,
+                    payload=excluded.payload,
+                    status=excluded.status
+                """,
+                (event.event_id, event.topic, event.payload, event.status),
+            )
+
 
 class SQLiteVectorRepository(_SQLiteRepositoryMixin, VectorRepository):
     def upsert(self, record: VectorRecord) -> None:

@@ -11,6 +11,8 @@
 - 建立数据库配置入口与 SQLAlchemy session factory 注入路径
 - 初始化 Alembic 并补上首个 migration
 - 把 `jobs / job_events / outbox` 的最小 shadow write 路径接进应用层
+- 增加 shadow write reconcile/report 原型
+- 增加 outbox dispatcher 原型
 - 增加对应测试，确保这些基础约束不是“只停留在设计”
 
 这一步的定位是：
@@ -278,6 +280,35 @@ roadmap 里明确提到：
 
 这说明 Phase 2 已经不只是有 ORM metadata，而是有真正可管理的迁移入口。
 
+### 10. `application/services/phase2_reconcile_service.py`
+
+新增了 Phase 2 的 reconcile/report 服务。
+
+它负责：
+
+- 对比主存储里的 job 数据
+- 对比 shadow write 数据库里的 job 数据
+- 统计缺失 job、字段不一致、job event 数量、pending outbox 数量
+
+这一步的意义是：
+
+- shadow write 不再只是“写了就算”
+- 系统开始具备一致性核对能力
+- 为后续定时 reconcile、报表和报警打基础
+
+### 11. `application/services/outbox_dispatcher.py`
+
+新增了 outbox dispatcher 原型。
+
+它负责：
+
+- 拉取 `pending` outbox 事件
+- 通过 publisher 进行发布
+- 发布成功后把状态改成 `published`
+- 发布失败后把状态改成 `failed`
+
+这还不是完整消息系统，但已经把 outbox 事件从“落库”推进到了“可调度发布”的原型阶段。
+
 ---
 
 ## 五、为什么代码要这样写
@@ -365,6 +396,8 @@ roadmap 里明确提到：
 - outbox `dedupe_key` 唯一约束是否生效
 - shadow write 是否会生成 `jobs / job_events / outbox` 记录
 - Alembic upgrade / downgrade 是否可执行
+- reconcile/report 是否能识别缺失 shadow write 数据
+- outbox dispatcher 是否会正确标记成功与失败状态
 
 这一轮测试重点是证明：
 
@@ -382,15 +415,17 @@ roadmap 里明确提到：
 - 建立数据库配置入口和 session factory 注入路径
 - 把 job 创建与状态变化接入最小 shadow write
 - 初始化 Alembic 并验证 migration upgrade/downgrade
+- 建立 reconcile/report 原型
+- 建立 outbox dispatcher 原型
 - 为 job_events / outbox / 幂等约束打基础
 - 用测试验证这些规则和模型
 
 ### 还没做到的
 
 - 还没有真正切到 PostgreSQL 实例运行
-- 还没有实现 shadow write / reconciliation
 - 还没有把 Phase 1 的运行时切换到 SQLAlchemy/PostgreSQL
-- 还没有建立完整 transaction + outbox 工作流
+- 还没有把 reconcile 做成持续任务或报告落盘
+- 还没有把 dispatcher 接到真实消息中间件
 
 这些仍然属于 Phase 2 后续工作。
 
@@ -411,6 +446,8 @@ roadmap 里明确提到：
 - 配置化数据库入口
 - Alembic migration 基础设施
 - shadow write 初步接入
+- reconcile/report 原型
+- outbox dispatcher 原型
 - 对应测试
 
 正式建立起来了。

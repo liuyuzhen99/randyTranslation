@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import replace
+from typing import Protocol
+
+from domain.entities import OutboxEvent
+from domain.enums import OutboxStatus
+from domain.repositories import OutboxRepository
+
+logger = logging.getLogger(__name__)
+
+
+class OutboxPublisher(Protocol):
+    def publish(self, topic: str, payload: str, correlation_id: str | None = None) -> None:
+        ...
+
+
+class OutboxDispatcher:
+    """Minimal dispatcher prototype that drains pending outbox events."""
+
+    def __init__(self, outbox_repository: OutboxRepository, publisher: OutboxPublisher) -> None:
+        self.outbox_repository = outbox_repository
+        self.publisher = publisher
+
+    def dispatch_pending(self) -> dict[str, int]:
+        published = 0
+        failed = 0
+
+        for event in self.outbox_repository.list_pending():
+            try:
+                self.publisher.publish(
+                    topic=event.topic,
+                    payload=event.payload,
+                    correlation_id=event.correlation_id,
+                )
+                self.outbox_repository.update(
+                    replace(event, status=OutboxStatus.PUBLISHED)
+                )
+                published += 1
+            except Exception:
+                logger.exception("Failed to dispatch outbox event %s", event.event_id)
+                self.outbox_repository.update(
+                    replace(event, status=OutboxStatus.FAILED)
+                )
+                failed += 1
+
+        return {"published": published, "failed": failed}

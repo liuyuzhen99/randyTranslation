@@ -63,6 +63,14 @@ class OutboxRepository(ABC):
     def list_pending(self) -> list[OutboxEvent]:
         raise NotImplementedError
 
+    @abstractmethod
+    def get(self, event_id: str) -> OutboxEvent | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update(self, event: OutboxEvent) -> None:
+        raise NotImplementedError
+
 
 class JobEventRepository(ABC):
     @abstractmethod
