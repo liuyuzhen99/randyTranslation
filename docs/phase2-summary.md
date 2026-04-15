@@ -8,6 +8,9 @@
 - 明确阶段状态和 Outbox 状态枚举
 - 定义 SQLAlchemy 版核心关系模型
 - 建立 SQLAlchemy repository 基础实现
+- 建立数据库配置入口与 SQLAlchemy session factory 注入路径
+- 初始化 Alembic 并补上首个 migration
+- 把 `jobs / job_events / outbox` 的最小 shadow write 路径接进应用层
 - 增加对应测试，确保这些基础约束不是“只停留在设计”
 
 这一步的定位是：
@@ -227,6 +230,54 @@ roadmap 里明确提到：
 
 数据库 repository 不再只是“盲写”，而是开始承担 Phase 2 所要求的状态一致性责任。
 
+### 7. `application/services/phase2_shadow_write_service.py`
+
+新增了最小的 Phase 2 shadow write 服务。
+
+它的职责是：
+
+- 在不改变 Phase 1 主存储路径的前提下
+- 把 job 的创建和状态变化同步写入 SQLAlchemy 模型
+- 同时生成 `job_events` 和 `outbox` 记录
+- 并把这几类写操作放进同一个 session/transaction 中完成
+
+这一步很关键，因为它让 Phase 2 不再只是“表结构设计好了”，而是已经开始出现：
+
+- 审计链路
+- outbox 原型
+- 双写切入点
+
+### 8. `api/config.py`
+
+新增了 Phase 2 相关运行时配置入口，例如：
+
+- `PHASE2_SHADOW_WRITE_ENABLED`
+- `PHASE2_AUTO_CREATE_SCHEMA`
+- `DATABASE_URL`
+
+并且可以根据配置创建：
+
+- `SQLAlchemySessionFactory`
+- `Phase2ShadowWriteService`
+
+这让 Phase 2 数据层不再只是测试里能用，而是运行时也有清晰注入路径。
+
+### 9. Alembic 基础设施
+
+当前已经新增：
+
+- `alembic.ini`
+- `alembic/env.py`
+- `alembic/script.py.mako`
+- 初始 migration 文件
+
+并且测试已经验证：
+
+- `upgrade head` 可执行
+- `downgrade base` 可执行
+
+这说明 Phase 2 已经不只是有 ORM metadata，而是有真正可管理的迁移入口。
+
 ---
 
 ## 五、为什么代码要这样写
@@ -312,6 +363,8 @@ roadmap 里明确提到：
 - `SQLAlchemyJobRepository` 是否拒绝非法状态迁移
 - artist / video / subtitle / job / job_event / outbox 的基础 round-trip
 - outbox `dedupe_key` 唯一约束是否生效
+- shadow write 是否会生成 `jobs / job_events / outbox` 记录
+- Alembic upgrade / downgrade 是否可执行
 
 这一轮测试重点是证明：
 
@@ -326,13 +379,15 @@ roadmap 里明确提到：
 - 初步建立 Job 生命周期状态机
 - 初步建立 SQLAlchemy 关系模型
 - 初步建立 SQLAlchemy repository
+- 建立数据库配置入口和 session factory 注入路径
+- 把 job 创建与状态变化接入最小 shadow write
+- 初始化 Alembic 并验证 migration upgrade/downgrade
 - 为 job_events / outbox / 幂等约束打基础
 - 用测试验证这些规则和模型
 
 ### 还没做到的
 
 - 还没有真正切到 PostgreSQL 实例运行
-- 还没有接 Alembic migration 管理
 - 还没有实现 shadow write / reconciliation
 - 还没有把 Phase 1 的运行时切换到 SQLAlchemy/PostgreSQL
 - 还没有建立完整 transaction + outbox 工作流
@@ -353,6 +408,9 @@ roadmap 里明确提到：
 - 关系约束
 - ORM 基础模型
 - 核心 SQLAlchemy repository
+- 配置化数据库入口
+- Alembic migration 基础设施
+- shadow write 初步接入
 - 对应测试
 
 正式建立起来了。

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime
-
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from domain.entities import Artist, Job, JobEvent, OutboxEvent, Subtitle, Video
 from domain.job_lifecycle import validate_job_transition
+from domain.time_utils import utc_now
 from domain.repositories import (
     ArtistRepository,
     JobEventRepository,
@@ -221,7 +220,7 @@ class SQLAlchemyJobRepository(JobRepository):
             row.result = job.result
             row.current_stage = job.current_stage
             row.retry_count = job.retry_count
-            row.updated_at = job.updated_at or datetime.utcnow()
+            row.updated_at = job.updated_at or utc_now()
 
     def list_all(self) -> dict[str, Job]:
         with self.session_factory.session_scope() as session:

@@ -5,7 +5,12 @@ from contextlib import asynccontextmanager
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 
-from api.config import create_job_repository, validate_startup_env
+from api.config import (
+    create_job_repository,
+    create_phase2_shadow_write_service,
+    load_runtime_settings,
+    validate_startup_env,
+)
 from application.services.job_service import JobService
 from application.services.pipeline_orchestrator import PipelineOrchestrator
 from infrastructure.pipeline.legacy_producer_adapter import create_default_producer_backend
@@ -25,15 +30,18 @@ class TaskResponse(BaseModel):
 
 
 def build_runtime_services():
-    job_repository = create_job_repository()
-    job_service = JobService(job_repository)
+    runtime_settings = load_runtime_settings()
+    job_repository = create_job_repository(runtime_settings=runtime_settings)
+    shadow_write_service = create_phase2_shadow_write_service(runtime_settings=runtime_settings)
+    job_service = JobService(job_repository, shadow_write_service=shadow_write_service)
     media_storage = LocalFilesystemMediaStorage()
     orchestrator = PipelineOrchestrator(
         job_repository,
         media_storage,
         create_default_producer_backend,
+        shadow_write_service=shadow_write_service,
     )
-    return job_repository, job_service, media_storage, orchestrator
+    return job_repository, job_service, media_storage, orchestrator, shadow_write_service
 
 
 @asynccontextmanager
@@ -44,12 +52,13 @@ async def app_lifespan(app_instance: FastAPI):
 
 def create_app() -> FastAPI:
     app_instance = FastAPI(title="Hip-hop MV 自动化工坊 API", lifespan=app_lifespan)
-    job_repository, job_service, media_storage, orchestrator = build_runtime_services()
+    job_repository, job_service, media_storage, orchestrator, shadow_write_service = build_runtime_services()
 
     app_instance.state.job_repository = job_repository
     app_instance.state.job_service = job_service
     app_instance.state.media_storage = media_storage
     app_instance.state.orchestrator = orchestrator
+    app_instance.state.shadow_write_service = shadow_write_service
 
     @app_instance.post("/create_task", response_model=TaskResponse)
     async def create_task(request: TaskRequest, background_tasks: BackgroundTasks):
@@ -86,6 +95,7 @@ job_repository = app.state.job_repository
 job_service = app.state.job_service
 media_storage = app.state.media_storage
 orchestrator = app.state.orchestrator
+shadow_write_service = app.state.shadow_write_service
 
 
 if __name__ == "__main__":

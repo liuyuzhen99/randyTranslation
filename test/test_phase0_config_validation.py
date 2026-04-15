@@ -1,8 +1,16 @@
 import unittest
 from tempfile import TemporaryDirectory
 
-from api.config import create_job_repository, load_runtime_settings, validate_startup_env
+from api.config import (
+    create_job_repository,
+    create_phase2_shadow_write_service,
+    create_sqlalchemy_session_factory,
+    load_runtime_settings,
+    validate_startup_env,
+)
+from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
 from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
+from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemySessionFactory
 from infrastructure.persistence.sqlite_repositories import SQLiteJobRepository
 
 
@@ -25,6 +33,8 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         settings = load_runtime_settings({})
         self.assertEqual(settings.job_repository_backend, "memory")
         self.assertEqual(settings.job_repository_sqlite_path, "")
+        self.assertEqual(settings.database_url, "")
+        self.assertFalse(settings.phase2_shadow_write_enabled)
 
     def test_load_runtime_settings_defaults_sqlite_path_when_backend_enabled(self):
         settings = load_runtime_settings({"JOB_REPOSITORY_BACKEND": "sqlite"})
@@ -48,6 +58,26 @@ class Phase0ConfigValidationTests(unittest.TestCase):
                 }
             )
             self.assertIsInstance(repo, SQLiteJobRepository)
+
+    def test_create_sqlalchemy_session_factory_returns_none_without_database_url(self):
+        self.assertIsNone(create_sqlalchemy_session_factory({}))
+
+    def test_create_sqlalchemy_session_factory_builds_factory(self):
+        session_factory = create_sqlalchemy_session_factory({"DATABASE_URL": "sqlite:///:memory:"})
+        self.assertIsInstance(session_factory, SQLAlchemySessionFactory)
+
+    def test_create_phase2_shadow_write_service_requires_database_url(self):
+        with self.assertRaises(RuntimeError):
+            create_phase2_shadow_write_service({"PHASE2_SHADOW_WRITE_ENABLED": "true"})
+
+    def test_create_phase2_shadow_write_service_builds_service(self):
+        service = create_phase2_shadow_write_service(
+            {
+                "PHASE2_SHADOW_WRITE_ENABLED": "true",
+                "DATABASE_URL": "sqlite:///:memory:",
+            }
+        )
+        self.assertIsInstance(service, Phase2ShadowWriteService)
 
 
 if __name__ == "__main__":

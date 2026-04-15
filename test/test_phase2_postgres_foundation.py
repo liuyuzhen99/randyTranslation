@@ -1,14 +1,18 @@
 import tempfile
 import unittest
-from datetime import datetime
 
 from sqlalchemy import create_engine, inspect
+from alembic import command
+from alembic.config import Config
 from sqlalchemy.exc import IntegrityError
 
 from domain.entities import Artist, Job, JobEvent, OutboxEvent, Subtitle, Video
 from domain.enums import JobStatus, OutboxStatus, StageStatus, StageType
 from domain.exceptions import InvalidJobTransitionError
 from domain.job_lifecycle import transition_job, validate_job_transition
+from domain.time_utils import utc_now
+from application.services.job_service import JobService
+from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
 from infrastructure.persistence.sqlalchemy_models import Base
 from infrastructure.persistence.sqlalchemy_repositories import (
     SQLAlchemyArtistRepository,
@@ -91,7 +95,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
                     video_id="video-1",
                     spotify_id="artist-1",
                     title="Track",
-                    published_at=datetime.utcnow(),
+                    published_at=utc_now(),
                     processed_status=StageStatus.PROCESSING,
                 )
             )
@@ -164,6 +168,51 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
                         correlation_id="job4",
                     )
                 )
+
+    def test_shadow_write_service_records_job_creation_transactionally(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory.create_schema()
+            service = Phase2ShadowWriteService(session_factory)
+            job = Job(job_id="job-shadow-1", song_name="song")
+
+            service.record_job_created(job)
+
+            self.assertEqual(SQLAlchemyJobRepository(session_factory).get(job.job_id).song_name, "song")
+            self.assertEqual(len(SQLAlchemyJobEventRepository(session_factory).list_for_job(job.job_id)), 1)
+            self.assertEqual(len(SQLAlchemyOutboxRepository(session_factory).list_pending()), 1)
+
+    def test_job_service_shadow_writes_initial_records(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory.create_schema()
+            shadow_service = Phase2ShadowWriteService(session_factory)
+            primary_repository = SQLAlchemyJobRepository(session_factory)
+            service = JobService(primary_repository, shadow_write_service=shadow_service)
+
+            job = service.create_job("song")
+
+            self.assertIsNotNone(primary_repository.get(job.job_id))
+            self.assertEqual(len(SQLAlchemyJobEventRepository(session_factory).list_for_job(job.job_id)), 1)
+
+    def test_alembic_upgrade_and_downgrade_manage_phase2_schema(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            database_path = f"{temp_root}/alembic.db"
+            config = Config("alembic.ini")
+            config.set_main_option(
+                "script_location",
+                "alembic",
+            )
+            config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
+
+            command.upgrade(config, "head")
+            inspector = inspect(create_engine(f"sqlite:///{database_path}", future=True))
+            self.assertIn("jobs", inspector.get_table_names())
+            self.assertIn("job_events", inspector.get_table_names())
+
+            command.downgrade(config, "base")
+            inspector = inspect(create_engine(f"sqlite:///{database_path}", future=True))
+            self.assertNotIn("jobs", inspector.get_table_names())
 
 
 if __name__ == "__main__":

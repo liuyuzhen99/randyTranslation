@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Optional
 
 from domain.enums import JobStatus, OutboxStatus, StageStatus, StageType
+from domain.time_utils import utc_now
 
 
 @dataclass
@@ -58,7 +59,7 @@ class JobEvent:
     stage: Optional[StageType] = None
     message: str = ""
     retry_count: int = 0
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass
@@ -78,8 +79,8 @@ class Job:
     result: Optional[str] = None
     current_stage: Optional[StageType] = None
     retry_count: int = 0
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
 
     def to_api_dict(self) -> dict:
         return {

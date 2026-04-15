@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
 
 from domain.entities import Job
 from domain.enums import JobStatus, StageType
 from domain.exceptions import InvalidJobTransitionError
+from domain.time_utils import utc_now
 
 TERMINAL_JOB_STATUSES = {JobStatus.COMPLETED}
 
@@ -79,5 +79,5 @@ def transition_job(
         current_stage=stage,
         result=result if result is not None else job.result,
         retry_count=next_retry_count,
-        updated_at=datetime.utcnow(),
+        updated_at=utc_now(),
     )
