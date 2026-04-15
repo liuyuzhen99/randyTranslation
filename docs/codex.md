@@ -39,3 +39,7 @@ list down:
 - explain it with details so it's easier to understand
 - the summerize should be also in detail and complete
 - the file should be wrote in Chinese language
+
+# tips
+
+if you met network issue such as timeout during git push, run "zsh -lic 'proxy'" at the command line, that should fix the issue.

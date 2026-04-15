@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Iterable, Optional
 
-from domain.entities import Artist, Job, OutboxEvent, Subtitle, VectorRecord, Video
+from domain.entities import Artist, Job, JobEvent, OutboxEvent, Subtitle, VectorRecord, Video
 
 
 class ArtistRepository(ABC):
@@ -61,6 +61,16 @@ class OutboxRepository(ABC):
 
     @abstractmethod
     def list_pending(self) -> list[OutboxEvent]:
+        raise NotImplementedError
+
+
+class JobEventRepository(ABC):
+    @abstractmethod
+    def add(self, event: JobEvent) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_for_job(self, job_id: str) -> list[JobEvent]:
         raise NotImplementedError
 
 

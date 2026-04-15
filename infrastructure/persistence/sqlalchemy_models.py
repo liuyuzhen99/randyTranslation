@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from domain.enums import JobStatus, OutboxStatus, StageStatus, StageType
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+job_status_enum = Enum(JobStatus, native_enum=False, create_constraint=True, validate_strings=True)
+stage_status_enum = Enum(
+    StageStatus,
+    native_enum=False,
+    create_constraint=True,
+    validate_strings=True,
+)
+stage_type_enum = Enum(StageType, native_enum=False, create_constraint=True, validate_strings=True)
+outbox_status_enum = Enum(
+    OutboxStatus,
+    native_enum=False,
+    create_constraint=True,
+    validate_strings=True,
+)
+
+
+class ArtistModel(Base):
+    __tablename__ = "artists"
+
+    spotify_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    yt_channel_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+
+
+class VideoModel(Base):
+    __tablename__ = "videos"
+    __table_args__ = (
+        Index("ix_videos_spotify_id", "spotify_id"),
+        Index("ix_videos_processed_status", "processed_status"),
+    )
+
+    video_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    spotify_id: Mapped[str | None] = mapped_column(
+        String(128),
+        ForeignKey("artists.spotify_id"),
+        nullable=True,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    processed_status: Mapped[StageStatus] = mapped_column(stage_status_enum, nullable=False)
+    local_video_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    srt_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_video_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SubtitleModel(Base):
+    __tablename__ = "subtitles"
+    __table_args__ = (
+        UniqueConstraint("video_id", "line_index", name="uq_subtitles_video_line_index"),
+    )
+
+    subtitle_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    video_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("videos.video_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    line_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_time: Mapped[float] = mapped_column(Float, nullable=False)
+    end_time: Mapped[float] = mapped_column(Float, nullable=False)
+    en_text: Mapped[str] = mapped_column(Text, nullable=False)
+    zh_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[StageStatus] = mapped_column(stage_status_enum, nullable=False)
+
+
+class JobModel(Base):
+    __tablename__ = "jobs"
+    __table_args__ = (
+        Index("ix_jobs_status", "status"),
+        CheckConstraint("retry_count >= 0", name="ck_jobs_retry_count_non_negative"),
+    )
+
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    song_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[JobStatus] = mapped_column(job_status_enum, nullable=False)
+    progress: Mapped[str] = mapped_column(Text, nullable=False)
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_stage: Mapped[StageType | None] = mapped_column(stage_type_enum, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+
+
+class JobEventModel(Base):
+    __tablename__ = "job_events"
+    __table_args__ = (
+        Index("ix_job_events_job_id_created_at", "job_id", "created_at"),
+        CheckConstraint("retry_count >= 0", name="ck_job_events_retry_count_non_negative"),
+    )
+
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    job_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("jobs.job_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    from_status: Mapped[JobStatus | None] = mapped_column(job_status_enum, nullable=True)
+    to_status: Mapped[JobStatus] = mapped_column(job_status_enum, nullable=False)
+    stage: Mapped[StageType | None] = mapped_column(stage_type_enum, nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+
+
+class OutboxModel(Base):
+    __tablename__ = "outbox"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_outbox_dedupe_key"),
+        Index("ix_outbox_status", "status"),
+        Index("ix_outbox_correlation_id", "correlation_id"),
+    )
+
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    topic: Mapped[str] = mapped_column(String(255), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[OutboxStatus] = mapped_column(outbox_status_enum, nullable=False)
+    aggregate_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
