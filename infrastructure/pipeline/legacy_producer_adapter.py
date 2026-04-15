@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Callable, Protocol
 
 
 class ProducerBackend(Protocol):
@@ -47,3 +47,6 @@ def create_default_producer_backend() -> ProducerBackend:
         return HipHopAutoProject()
     except Exception:
         return MissingProducerBackend()
+
+
+ProducerBackendFactory = Callable[[], ProducerBackend]

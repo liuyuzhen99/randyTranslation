@@ -1,7 +1,8 @@
 import logging
-from logging.handlers import RotatingFileHandler
 import os
+from logging.handlers import RotatingFileHandler
 import traceback
+
 
 class TaskIdFilter(logging.Filter):
     """确保每条日志都有 task_id 属性，防止 Formatter 报错"""
@@ -20,10 +21,15 @@ class LogManager:
             # cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self, log_file="/Users/randy/Downloads/temp/hiphop_app.log"):
+    def __init__(self, log_file=None):
         if LogManager._initialized: return # 确保只配置一次 Handler
-        
-        self.log_file = log_file
+
+        default_log_dir = os.path.join(os.getcwd(), "logs")
+        self.log_file = log_file or os.getenv(
+            "LOG_FILE_PATH",
+            os.path.join(default_log_dir, "hiphop_app.log"),
+        )
+        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
         self.formatter = logging.Formatter(
             "%(asctime)s - %(levelname)s - [Task:%(task_id)s] - %(message)s"
         )

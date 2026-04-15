@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from threading import Lock
 from typing import Optional
 
@@ -16,16 +17,17 @@ class InMemoryJobRepository(JobRepository):
 
     def create(self, job: Job) -> None:
         with self._lock:
-            self._jobs[job.job_id] = job
+            self._jobs[job.job_id] = deepcopy(job)
 
     def get(self, job_id: str) -> Optional[Job]:
         with self._lock:
-            return self._jobs.get(job_id)
+            job = self._jobs.get(job_id)
+            return deepcopy(job) if job is not None else None
 
     def update(self, job: Job) -> None:
         with self._lock:
-            self._jobs[job.job_id] = job
+            self._jobs[job.job_id] = deepcopy(job)
 
     def list_all(self) -> dict[str, Job]:
         with self._lock:
-            return dict(self._jobs)
+            return {job_id: deepcopy(job) for job_id, job in self._jobs.items()}
