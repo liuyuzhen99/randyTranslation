@@ -16,6 +16,18 @@ class OutboxPublisher(Protocol):
         ...
 
 
+class LoggingOutboxPublisher:
+    """Prototype publisher that makes outbox draining observable before RabbitMQ lands."""
+
+    def publish(self, topic: str, payload: str, correlation_id: str | None = None) -> None:
+        logger.info(
+            "Dispatching outbox event topic=%s correlation_id=%s payload=%s",
+            topic,
+            correlation_id,
+            payload,
+        )
+
+
 class OutboxDispatcher:
     """Minimal dispatcher prototype that drains pending outbox events."""
 

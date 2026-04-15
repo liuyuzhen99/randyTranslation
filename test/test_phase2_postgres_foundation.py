@@ -216,6 +216,21 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
             self.assertFalse(report.is_consistent)
             self.assertEqual(report.missing_job_ids_in_shadow, ["job-missing"])
 
+    def test_reconcile_service_writes_report_file(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            primary_repository = InMemoryJobRepository()
+            primary_repository.create(Job(job_id="job-report", song_name="song"))
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory.create_schema()
+            service = Phase2ReconcileService(primary_repository, session_factory)
+
+            report = service.write_report(f"{temp_root}/reports/reconcile.json")
+
+            self.assertFalse(report.is_consistent)
+            with open(f"{temp_root}/reports/reconcile.json", "r", encoding="utf-8") as file_obj:
+                content = file_obj.read()
+            self.assertIn('"missing_job_ids_in_shadow"', content)
+
     def test_outbox_dispatcher_marks_events_published(self):
         with tempfile.TemporaryDirectory() as temp_root:
             session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")

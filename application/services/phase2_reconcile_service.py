@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from domain.repositories import JobRepository
 from infrastructure.persistence.sqlalchemy_repositories import (
@@ -81,3 +83,13 @@ class Phase2ReconcileService:
             missing_job_ids_in_shadow=missing_job_ids,
             mismatched_job_fields=mismatched_job_fields,
         )
+
+    def write_report(self, report_path: str) -> Phase2ReconcileReport:
+        report = self.generate_report()
+        path = Path(report_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return report

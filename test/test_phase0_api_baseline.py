@@ -98,6 +98,78 @@ class Phase0ApiBaselineTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json()["song_name"], "Count Me Out")
 
+    def test_sqlalchemy_backend_persists_jobs_across_app_rebuild(self):
+        with TemporaryDirectory() as temp_root:
+            env = {
+                "DEEPSEEK_API_KEY": "test-key",
+                "DEEPSEEK_BASE_URL": "https://example.local",
+                "JOB_REPOSITORY_BACKEND": "sqlalchemy",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase2.db')}",
+                "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                "LOG_FILE_PATH": os.path.join(temp_root, "app.log"),
+            }
+
+            with patch.dict(os.environ, env, clear=False):
+                first_app = api_service.create_app()
+                with TestClient(first_app) as first_client:
+                    task_id = first_client.post("/create_task", json={"song_name": "Worldwide Steppers"}).json()["task_id"]
+
+                second_app = api_service.create_app()
+                with TestClient(second_app) as second_client:
+                    response = second_client.get(f"/check_status/{task_id}")
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json()["song_name"], "Worldwide Steppers")
+
+    def test_phase2_reconcile_endpoint_returns_report_and_writes_file(self):
+        with TemporaryDirectory() as temp_root:
+            report_path = os.path.join(temp_root, "reports", "phase2-reconcile.json")
+            env = {
+                "DEEPSEEK_API_KEY": "test-key",
+                "DEEPSEEK_BASE_URL": "https://example.local",
+                "JOB_REPOSITORY_BACKEND": "sqlalchemy",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase2.db')}",
+                "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                "PHASE2_SHADOW_WRITE_ENABLED": "true",
+                "PHASE2_RECONCILE_ENABLED": "true",
+                "PHASE2_RECONCILE_REPORT_PATH": report_path,
+                "LOG_FILE_PATH": os.path.join(temp_root, "app.log"),
+            }
+
+            with patch.dict(os.environ, env, clear=False):
+                app = api_service.create_app()
+                with TestClient(app) as client:
+                    client.post("/create_task", json={"song_name": "Silent Hill"})
+                    response = client.get("/internal/phase2/reconcile")
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["report_path"], report_path)
+            self.assertTrue(os.path.exists(report_path))
+            self.assertIn("is_consistent", payload["report"])
+
+    def test_phase2_outbox_dispatch_endpoint_drains_pending_events(self):
+        with TemporaryDirectory() as temp_root:
+            env = {
+                "DEEPSEEK_API_KEY": "test-key",
+                "DEEPSEEK_BASE_URL": "https://example.local",
+                "JOB_REPOSITORY_BACKEND": "sqlalchemy",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase2.db')}",
+                "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                "PHASE2_SHADOW_WRITE_ENABLED": "true",
+                "PHASE2_OUTBOX_DISPATCH_ENABLED": "true",
+                "LOG_FILE_PATH": os.path.join(temp_root, "app.log"),
+            }
+
+            with patch.dict(os.environ, env, clear=False):
+                app = api_service.create_app()
+                app.state.orchestrator = NoopOrchestrator()
+                with TestClient(app) as client:
+                    client.post("/create_task", json={"song_name": "Element"})
+                    response = client.post("/internal/phase2/outbox/dispatch")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"published": 1, "failed": 0})
+
 
 if __name__ == "__main__":
     unittest.main()

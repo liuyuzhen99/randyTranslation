@@ -31,6 +31,10 @@ Phase 2 的目标是把当前项目从 Phase 1 的“分层架构 + 临时持久
 - Job / JobEvent / Outbox 的最小 shadow write 路径
 - shadow write reconcile/report 原型
 - outbox dispatcher 原型
+- 运行时内部入口：
+  - `GET /internal/phase2/reconcile`
+  - `POST /internal/phase2/outbox/dispatch`
+- `JOB_REPOSITORY_BACKEND=sqlalchemy` 可作为主 job repository 使用
 - Phase 2 foundation 测试
 
 这意味着后面的工作不用再从“抽象不清楚”的状态开始，可以直接往 PostgreSQL 和 migration 管理推进。
@@ -117,6 +121,7 @@ Phase 2 的数据库设计要天然支撑：
 - Phase 2 在真实 PostgreSQL 实例上跑通
 - Alembic migration 在 clean DB 上完成 upgrade/downgrade
 - shadow write reconcile 可以输出可消费报告
+- reconcile 报告可以通过运行时入口直接生成，并支持落盘
 - outbox dispatcher 可以接入真实 publisher
 - Job / JobEvent / Outbox 的事务边界更清晰
 - CI 继续覆盖并扩展 Phase 2 tests

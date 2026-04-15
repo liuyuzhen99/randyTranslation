@@ -7,12 +7,16 @@ from pydantic import BaseModel
 
 from api.config import (
     create_job_repository,
+    create_phase2_outbox_dispatcher,
+    create_phase2_reconcile_service,
     create_phase2_shadow_write_service,
+    create_sqlalchemy_session_factory,
     load_runtime_settings,
     validate_startup_env,
 )
 from application.services.job_service import JobService
 from application.services.pipeline_orchestrator import PipelineOrchestrator
+from application.services.outbox_dispatcher import LoggingOutboxPublisher
 from infrastructure.pipeline.legacy_producer_adapter import create_default_producer_backend
 from infrastructure.storage.local_media_storage import LocalFilesystemMediaStorage
 from utils.logger_manager import LogManager
@@ -31,8 +35,15 @@ class TaskResponse(BaseModel):
 
 def build_runtime_services():
     runtime_settings = load_runtime_settings()
-    job_repository = create_job_repository(runtime_settings=runtime_settings)
-    shadow_write_service = create_phase2_shadow_write_service(runtime_settings=runtime_settings)
+    session_factory = create_sqlalchemy_session_factory(runtime_settings=runtime_settings)
+    job_repository = create_job_repository(
+        runtime_settings=runtime_settings,
+        session_factory=session_factory,
+    )
+    shadow_write_service = create_phase2_shadow_write_service(
+        runtime_settings=runtime_settings,
+        session_factory=session_factory,
+    )
     job_service = JobService(job_repository, shadow_write_service=shadow_write_service)
     media_storage = LocalFilesystemMediaStorage()
     orchestrator = PipelineOrchestrator(
@@ -41,7 +52,27 @@ def build_runtime_services():
         create_default_producer_backend,
         shadow_write_service=shadow_write_service,
     )
-    return job_repository, job_service, media_storage, orchestrator, shadow_write_service
+    reconcile_service = create_phase2_reconcile_service(
+        primary_job_repository=job_repository,
+        runtime_settings=runtime_settings,
+        session_factory=session_factory,
+    )
+    outbox_dispatcher = create_phase2_outbox_dispatcher(
+        publisher=LoggingOutboxPublisher(),
+        runtime_settings=runtime_settings,
+        session_factory=session_factory,
+    )
+    return (
+        job_repository,
+        job_service,
+        media_storage,
+        orchestrator,
+        shadow_write_service,
+        reconcile_service,
+        outbox_dispatcher,
+        session_factory,
+        runtime_settings,
+    )
 
 
 @asynccontextmanager
@@ -52,13 +83,27 @@ async def app_lifespan(app_instance: FastAPI):
 
 def create_app() -> FastAPI:
     app_instance = FastAPI(title="Hip-hop MV 自动化工坊 API", lifespan=app_lifespan)
-    job_repository, job_service, media_storage, orchestrator, shadow_write_service = build_runtime_services()
+    (
+        job_repository,
+        job_service,
+        media_storage,
+        orchestrator,
+        shadow_write_service,
+        reconcile_service,
+        outbox_dispatcher,
+        session_factory,
+        runtime_settings,
+    ) = build_runtime_services()
 
     app_instance.state.job_repository = job_repository
     app_instance.state.job_service = job_service
     app_instance.state.media_storage = media_storage
     app_instance.state.orchestrator = orchestrator
     app_instance.state.shadow_write_service = shadow_write_service
+    app_instance.state.reconcile_service = reconcile_service
+    app_instance.state.outbox_dispatcher = outbox_dispatcher
+    app_instance.state.session_factory = session_factory
+    app_instance.state.runtime_settings = runtime_settings
 
     @app_instance.post("/create_task", response_model=TaskResponse)
     async def create_task(request: TaskRequest, background_tasks: BackgroundTasks):
@@ -87,6 +132,30 @@ def create_app() -> FastAPI:
             for task_id, job in app_instance.state.job_service.list_jobs().items()
         }
 
+    @app_instance.get("/internal/phase2/reconcile")
+    async def phase2_reconcile():
+        reconcile_service = app_instance.state.reconcile_service
+        if reconcile_service is None:
+            raise HTTPException(status_code=503, detail="Phase 2 reconcile service is not enabled")
+
+        report_path = app_instance.state.runtime_settings.phase2_reconcile_report_path
+        if report_path:
+            report = reconcile_service.write_report(report_path)
+        else:
+            report = reconcile_service.generate_report()
+
+        return {
+            "report": report.to_dict(),
+            "report_path": report_path,
+        }
+
+    @app_instance.post("/internal/phase2/outbox/dispatch")
+    async def phase2_outbox_dispatch():
+        outbox_dispatcher = app_instance.state.outbox_dispatcher
+        if outbox_dispatcher is None:
+            raise HTTPException(status_code=503, detail="Phase 2 outbox dispatcher is not enabled")
+        return outbox_dispatcher.dispatch_pending()
+
     return app_instance
 
 
@@ -96,6 +165,10 @@ job_service = app.state.job_service
 media_storage = app.state.media_storage
 orchestrator = app.state.orchestrator
 shadow_write_service = app.state.shadow_write_service
+reconcile_service = app.state.reconcile_service
+outbox_dispatcher = app.state.outbox_dispatcher
+session_factory = app.state.session_factory
+runtime_settings = app.state.runtime_settings
 
 
 if __name__ == "__main__":

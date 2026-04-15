@@ -14,6 +14,7 @@ from application.services.outbox_dispatcher import OutboxDispatcher
 from application.services.phase2_reconcile_service import Phase2ReconcileService
 from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
 from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
+from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyJobRepository
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemySessionFactory
 from infrastructure.persistence.sqlite_repositories import SQLiteJobRepository
 
@@ -40,7 +41,14 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         self.assertEqual(settings.database_url, "")
         self.assertFalse(settings.phase2_shadow_write_enabled)
         self.assertFalse(settings.phase2_reconcile_enabled)
+        self.assertEqual(settings.phase2_reconcile_report_path, "")
         self.assertFalse(settings.phase2_outbox_dispatch_enabled)
+
+    def test_load_runtime_settings_reads_reconcile_report_path(self):
+        settings = load_runtime_settings(
+            {"PHASE2_RECONCILE_REPORT_PATH": "./data/reports/phase2.json"}
+        )
+        self.assertEqual(settings.phase2_reconcile_report_path, "./data/reports/phase2.json")
 
     def test_load_runtime_settings_builds_database_url_from_postgres_parts(self):
         settings = load_runtime_settings(
@@ -79,6 +87,15 @@ class Phase0ConfigValidationTests(unittest.TestCase):
                 }
             )
             self.assertIsInstance(repo, SQLiteJobRepository)
+
+    def test_create_job_repository_builds_sqlalchemy_backend(self):
+        repo = create_job_repository(
+            {
+                "JOB_REPOSITORY_BACKEND": "sqlalchemy",
+                "DATABASE_URL": "sqlite:///:memory:",
+            }
+        )
+        self.assertIsInstance(repo, SQLAlchemyJobRepository)
 
     def test_create_sqlalchemy_session_factory_returns_none_without_database_url(self):
         self.assertIsNone(create_sqlalchemy_session_factory({}))

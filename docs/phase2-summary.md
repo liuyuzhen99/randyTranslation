@@ -13,6 +13,8 @@
 - 把 `jobs / job_events / outbox` 的最小 shadow write 路径接进应用层
 - 增加 shadow write reconcile/report 原型
 - 增加 outbox dispatcher 原型
+- 把 `JOB_REPOSITORY_BACKEND=sqlalchemy` 接成可运行主 repository
+- 增加 Phase 2 内部运维入口用于直接触发 reconcile 与 outbox dispatch
 - 增加对应测试，确保这些基础约束不是“只停留在设计”
 
 这一步的定位是：
