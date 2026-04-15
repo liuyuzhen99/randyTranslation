@@ -14,6 +14,7 @@ from utils.logger_manager import LogManager
 
 system_logger = LogManager.get_task_logger("SYSTEM")
 
+
 class TaskRequest(BaseModel):
     song_name: str
 
