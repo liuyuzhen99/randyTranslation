@@ -132,6 +132,7 @@ class Phase0ApiBaselineTests(unittest.TestCase):
                 "PHASE2_SHADOW_WRITE_ENABLED": "true",
                 "PHASE2_RECONCILE_ENABLED": "true",
                 "PHASE2_RECONCILE_REPORT_PATH": report_path,
+                "PHASE2_RECONCILE_MAX_MISSING_JOBS": "0",
                 "LOG_FILE_PATH": os.path.join(temp_root, "app.log"),
             }
 
@@ -146,6 +147,7 @@ class Phase0ApiBaselineTests(unittest.TestCase):
             self.assertEqual(payload["report_path"], report_path)
             self.assertTrue(os.path.exists(report_path))
             self.assertIn("is_consistent", payload["report"])
+            self.assertIn("is_within_threshold", payload["report"])
 
     def test_phase2_outbox_dispatch_endpoint_drains_pending_events(self):
         with TemporaryDirectory() as temp_root:

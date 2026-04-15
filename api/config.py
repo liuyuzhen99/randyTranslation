@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from application.services.outbox_dispatcher import OutboxDispatcher
-from application.services.phase2_reconcile_service import Phase2ReconcileService
+from application.services.phase2_reconcile_service import (
+    Phase2ReconcileService,
+    Phase2ReconcileThresholds,
+)
 from domain.repositories import JobRepository
 from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
 from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
@@ -33,6 +36,10 @@ KNOWN_ENV_VARS: tuple[str, ...] = (
     "PHASE2_AUTO_CREATE_SCHEMA",
     "PHASE2_RECONCILE_ENABLED",
     "PHASE2_RECONCILE_REPORT_PATH",
+    "PHASE2_RECONCILE_MAX_MISSING_JOBS",
+    "PHASE2_RECONCILE_MAX_JOB_FIELD_MISMATCHES",
+    "PHASE2_RECONCILE_MAX_INVALID_OUTBOX_PAYLOADS",
+    "PHASE2_RECONCILE_MAX_OUTBOX_PAYLOAD_MISMATCHES",
     "PHASE2_OUTBOX_DISPATCH_ENABLED",
     "MEDIA_TEMP_ROOT",
     "MEDIA_OUTPUT_ROOT",
@@ -80,6 +87,10 @@ class AppRuntimeSettings:
     phase2_auto_create_schema: bool = False
     phase2_reconcile_enabled: bool = False
     phase2_reconcile_report_path: str = ""
+    phase2_reconcile_max_missing_jobs: int = 0
+    phase2_reconcile_max_job_field_mismatches: int = 0
+    phase2_reconcile_max_invalid_outbox_payloads: int = 0
+    phase2_reconcile_max_outbox_payload_mismatches: int = 0
     phase2_outbox_dispatch_enabled: bool = False
 
 
@@ -115,6 +126,22 @@ def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntim
         "on",
     }
     reconcile_report_path = source.get("PHASE2_RECONCILE_REPORT_PATH", "").strip()
+    reconcile_max_missing_jobs = _read_non_negative_int(
+        source,
+        "PHASE2_RECONCILE_MAX_MISSING_JOBS",
+    )
+    reconcile_max_job_field_mismatches = _read_non_negative_int(
+        source,
+        "PHASE2_RECONCILE_MAX_JOB_FIELD_MISMATCHES",
+    )
+    reconcile_max_invalid_outbox_payloads = _read_non_negative_int(
+        source,
+        "PHASE2_RECONCILE_MAX_INVALID_OUTBOX_PAYLOADS",
+    )
+    reconcile_max_outbox_payload_mismatches = _read_non_negative_int(
+        source,
+        "PHASE2_RECONCILE_MAX_OUTBOX_PAYLOAD_MISMATCHES",
+    )
     outbox_dispatch_enabled = source.get("PHASE2_OUTBOX_DISPATCH_ENABLED", "").strip().lower() in {
         "1",
         "true",
@@ -141,8 +168,25 @@ def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntim
         phase2_auto_create_schema=auto_create_schema,
         phase2_reconcile_enabled=reconcile_enabled,
         phase2_reconcile_report_path=reconcile_report_path,
+        phase2_reconcile_max_missing_jobs=reconcile_max_missing_jobs,
+        phase2_reconcile_max_job_field_mismatches=reconcile_max_job_field_mismatches,
+        phase2_reconcile_max_invalid_outbox_payloads=reconcile_max_invalid_outbox_payloads,
+        phase2_reconcile_max_outbox_payload_mismatches=reconcile_max_outbox_payload_mismatches,
         phase2_outbox_dispatch_enabled=outbox_dispatch_enabled,
     )
+
+
+def _read_non_negative_int(source: Mapping[str, str], key: str) -> int:
+    raw_value = source.get(key, "").strip()
+    if not raw_value:
+        return 0
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeError(f"{key} must be a non-negative integer.") from exc
+    if value < 0:
+        raise RuntimeError(f"{key} must be a non-negative integer.")
+    return value
 
 
 def create_job_repository(
@@ -208,7 +252,16 @@ def create_phase2_reconcile_service(
         raise RuntimeError(
             "PHASE2_RECONCILE_ENABLED requires DATABASE_URL to be configured."
         )
-    return Phase2ReconcileService(primary_job_repository, active_session_factory)
+    return Phase2ReconcileService(
+        primary_job_repository,
+        active_session_factory,
+        thresholds=Phase2ReconcileThresholds(
+            max_missing_jobs=settings.phase2_reconcile_max_missing_jobs,
+            max_job_field_mismatches=settings.phase2_reconcile_max_job_field_mismatches,
+            max_invalid_outbox_payloads=settings.phase2_reconcile_max_invalid_outbox_payloads,
+            max_outbox_payload_mismatches=settings.phase2_reconcile_max_outbox_payload_mismatches,
+        ),
+    )
 
 
 def create_phase2_outbox_dispatcher(

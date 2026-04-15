@@ -14,7 +14,10 @@ from domain.message_contracts import JobLifecycleMessage
 from domain.time_utils import utc_now
 from application.services.job_service import JobService
 from application.services.outbox_dispatcher import OutboxDispatcher
-from application.services.phase2_reconcile_service import Phase2ReconcileService
+from application.services.phase2_reconcile_service import (
+    Phase2ReconcileService,
+    Phase2ReconcileThresholds,
+)
 from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
 from infrastructure.persistence.sqlalchemy_models import Base
 from infrastructure.persistence.sqlalchemy_repositories import (
@@ -209,6 +212,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
             report = Phase2ReconcileService(primary_repository, session_factory).generate_report()
 
             self.assertTrue(report.is_consistent)
+            self.assertTrue(report.is_within_threshold)
             self.assertEqual(report.primary_job_count, 1)
             self.assertEqual(report.shadow_job_count, 1)
             self.assertEqual(report.pending_outbox_count, 1)
@@ -228,7 +232,26 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
             report = Phase2ReconcileService(primary_repository, session_factory).generate_report()
 
             self.assertFalse(report.is_consistent)
+            self.assertFalse(report.is_within_threshold)
             self.assertEqual(report.missing_job_ids_in_shadow, ["job-missing"])
+
+    def test_reconcile_service_can_allow_documented_variance_thresholds(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            primary_repository = InMemoryJobRepository()
+            primary_repository.create(Job(job_id="job-threshold", song_name="song"))
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory.create_schema()
+            service = Phase2ReconcileService(
+                primary_repository,
+                session_factory,
+                thresholds=Phase2ReconcileThresholds(max_missing_jobs=1),
+            )
+
+            report = service.generate_report()
+
+            self.assertFalse(report.is_consistent)
+            self.assertTrue(report.is_within_threshold)
+            self.assertEqual(report.thresholds.max_missing_jobs, 1)
 
     def test_reconcile_service_reports_invalid_outbox_payload(self):
         with tempfile.TemporaryDirectory() as temp_root:
@@ -251,6 +274,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
             report = Phase2ReconcileService(primary_repository, session_factory).generate_report()
 
             self.assertFalse(report.is_consistent)
+            self.assertFalse(report.is_within_threshold)
             self.assertEqual(report.invalid_outbox_event_ids, ["outbox-invalid-1"])
 
     def test_reconcile_service_reports_outbox_payload_mismatch(self):
@@ -288,6 +312,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
             report = Phase2ReconcileService(primary_repository, session_factory).generate_report()
 
             self.assertFalse(report.is_consistent)
+            self.assertFalse(report.is_within_threshold)
             self.assertEqual(report.mismatched_outbox_payloads, {"outbox-mismatch-1": ["progress"]})
 
     def test_reconcile_service_writes_report_file(self):

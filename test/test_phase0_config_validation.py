@@ -42,6 +42,10 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         self.assertFalse(settings.phase2_shadow_write_enabled)
         self.assertFalse(settings.phase2_reconcile_enabled)
         self.assertEqual(settings.phase2_reconcile_report_path, "")
+        self.assertEqual(settings.phase2_reconcile_max_missing_jobs, 0)
+        self.assertEqual(settings.phase2_reconcile_max_job_field_mismatches, 0)
+        self.assertEqual(settings.phase2_reconcile_max_invalid_outbox_payloads, 0)
+        self.assertEqual(settings.phase2_reconcile_max_outbox_payload_mismatches, 0)
         self.assertFalse(settings.phase2_outbox_dispatch_enabled)
 
     def test_load_runtime_settings_reads_reconcile_report_path(self):
@@ -49,6 +53,24 @@ class Phase0ConfigValidationTests(unittest.TestCase):
             {"PHASE2_RECONCILE_REPORT_PATH": "./data/reports/phase2.json"}
         )
         self.assertEqual(settings.phase2_reconcile_report_path, "./data/reports/phase2.json")
+
+    def test_load_runtime_settings_reads_reconcile_thresholds(self):
+        settings = load_runtime_settings(
+            {
+                "PHASE2_RECONCILE_MAX_MISSING_JOBS": "2",
+                "PHASE2_RECONCILE_MAX_JOB_FIELD_MISMATCHES": "3",
+                "PHASE2_RECONCILE_MAX_INVALID_OUTBOX_PAYLOADS": "4",
+                "PHASE2_RECONCILE_MAX_OUTBOX_PAYLOAD_MISMATCHES": "5",
+            }
+        )
+        self.assertEqual(settings.phase2_reconcile_max_missing_jobs, 2)
+        self.assertEqual(settings.phase2_reconcile_max_job_field_mismatches, 3)
+        self.assertEqual(settings.phase2_reconcile_max_invalid_outbox_payloads, 4)
+        self.assertEqual(settings.phase2_reconcile_max_outbox_payload_mismatches, 5)
+
+    def test_load_runtime_settings_rejects_negative_reconcile_threshold(self):
+        with self.assertRaises(RuntimeError):
+            load_runtime_settings({"PHASE2_RECONCILE_MAX_MISSING_JOBS": "-1"})
 
     def test_load_runtime_settings_builds_database_url_from_postgres_parts(self):
         settings = load_runtime_settings(
@@ -130,9 +152,11 @@ class Phase0ConfigValidationTests(unittest.TestCase):
             {
                 "PHASE2_RECONCILE_ENABLED": "true",
                 "DATABASE_URL": "sqlite:///:memory:",
+                "PHASE2_RECONCILE_MAX_MISSING_JOBS": "1",
             },
         )
         self.assertIsInstance(service, Phase2ReconcileService)
+        self.assertEqual(service.thresholds.max_missing_jobs, 1)
 
     def test_create_phase2_outbox_dispatcher_requires_database_url(self):
         with self.assertRaises(RuntimeError):

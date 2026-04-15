@@ -6,6 +6,7 @@ from pathlib import Path
 
 from domain.message_contracts import JobLifecycleMessage
 from domain.repositories import JobRepository
+from domain.time_utils import utc_now
 from infrastructure.persistence.sqlalchemy_repositories import (
     SQLAlchemyJobEventRepository,
     SQLAlchemyJobRepository,
@@ -14,12 +15,22 @@ from infrastructure.persistence.sqlalchemy_repositories import (
 )
 
 
+@dataclass(frozen=True)
+class Phase2ReconcileThresholds:
+    max_missing_jobs: int = 0
+    max_job_field_mismatches: int = 0
+    max_invalid_outbox_payloads: int = 0
+    max_outbox_payload_mismatches: int = 0
+
+
 @dataclass
 class Phase2ReconcileReport:
+    generated_at: str
     primary_job_count: int
     shadow_job_count: int
     pending_outbox_count: int
     shadow_job_event_count: int
+    thresholds: Phase2ReconcileThresholds = field(default_factory=Phase2ReconcileThresholds)
     missing_job_ids_in_shadow: list[str] = field(default_factory=list)
     mismatched_job_fields: dict[str, list[str]] = field(default_factory=dict)
     invalid_outbox_event_ids: list[str] = field(default_factory=list)
@@ -34,17 +45,34 @@ class Phase2ReconcileReport:
             and not self.mismatched_outbox_payloads
         )
 
+    @property
+    def is_within_threshold(self) -> bool:
+        return (
+            len(self.missing_job_ids_in_shadow) <= self.thresholds.max_missing_jobs
+            and len(self.mismatched_job_fields) <= self.thresholds.max_job_field_mismatches
+            and len(self.invalid_outbox_event_ids) <= self.thresholds.max_invalid_outbox_payloads
+            and len(self.mismatched_outbox_payloads) <= self.thresholds.max_outbox_payload_mismatches
+        )
+
     def to_dict(self) -> dict:
         return {
+            "generated_at": self.generated_at,
             "primary_job_count": self.primary_job_count,
             "shadow_job_count": self.shadow_job_count,
             "pending_outbox_count": self.pending_outbox_count,
             "shadow_job_event_count": self.shadow_job_event_count,
+            "thresholds": {
+                "max_missing_jobs": self.thresholds.max_missing_jobs,
+                "max_job_field_mismatches": self.thresholds.max_job_field_mismatches,
+                "max_invalid_outbox_payloads": self.thresholds.max_invalid_outbox_payloads,
+                "max_outbox_payload_mismatches": self.thresholds.max_outbox_payload_mismatches,
+            },
             "missing_job_ids_in_shadow": self.missing_job_ids_in_shadow,
             "mismatched_job_fields": self.mismatched_job_fields,
             "invalid_outbox_event_ids": self.invalid_outbox_event_ids,
             "mismatched_outbox_payloads": self.mismatched_outbox_payloads,
             "is_consistent": self.is_consistent,
+            "is_within_threshold": self.is_within_threshold,
         }
 
 
@@ -55,11 +83,13 @@ class Phase2ReconcileService:
         self,
         primary_job_repository: JobRepository,
         session_factory: SQLAlchemySessionFactory,
+        thresholds: Phase2ReconcileThresholds | None = None,
     ) -> None:
         self.primary_job_repository = primary_job_repository
         self.shadow_job_repository = SQLAlchemyJobRepository(session_factory)
         self.shadow_job_event_repository = SQLAlchemyJobEventRepository(session_factory)
         self.shadow_outbox_repository = SQLAlchemyOutboxRepository(session_factory)
+        self.thresholds = thresholds or Phase2ReconcileThresholds()
 
     def generate_report(self) -> Phase2ReconcileReport:
         primary_jobs = self.primary_job_repository.list_all()
@@ -102,10 +132,12 @@ class Phase2ReconcileService:
                 mismatched_outbox_payloads[event.event_id] = mismatches
 
         return Phase2ReconcileReport(
+            generated_at=utc_now().isoformat(),
             primary_job_count=len(primary_jobs),
             shadow_job_count=len(shadow_jobs),
             pending_outbox_count=len(self.shadow_outbox_repository.list_pending()),
             shadow_job_event_count=shadow_job_event_count,
+            thresholds=self.thresholds,
             missing_job_ids_in_shadow=missing_job_ids,
             mismatched_job_fields=mismatched_job_fields,
             invalid_outbox_event_ids=invalid_outbox_event_ids,
