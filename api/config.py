@@ -265,13 +265,15 @@ def create_phase2_reconcile_service(
 
 
 def create_phase2_outbox_dispatcher(
-    publisher,
+    publisher=None,
     environ: Mapping[str, str] | None = None,
     runtime_settings: AppRuntimeSettings | None = None,
     session_factory: SQLAlchemySessionFactory | None = None,
 ) -> OutboxDispatcher | None:
     settings = runtime_settings or load_runtime_settings(environ)
     if not settings.phase2_outbox_dispatch_enabled:
+        return None
+    if publisher is None:
         return None
     active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
     if active_session_factory is None:

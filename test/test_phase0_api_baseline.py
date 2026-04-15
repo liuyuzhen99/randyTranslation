@@ -149,7 +149,7 @@ class Phase0ApiBaselineTests(unittest.TestCase):
             self.assertIn("is_consistent", payload["report"])
             self.assertIn("is_within_threshold", payload["report"])
 
-    def test_phase2_outbox_dispatch_endpoint_drains_pending_events(self):
+    def test_phase2_outbox_dispatch_endpoint_returns_503_without_real_publisher(self):
         with TemporaryDirectory() as temp_root:
             env = {
                 "DEEPSEEK_API_KEY": "test-key",
@@ -169,12 +169,42 @@ class Phase0ApiBaselineTests(unittest.TestCase):
                     client.post("/create_task", json={"song_name": "Element"})
                     response = client.post("/internal/phase2/outbox/dispatch")
 
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.json(), {"detail": "Phase 2 outbox dispatcher is not enabled"})
+
+    def test_phase2_outbox_dispatch_endpoint_works_with_injected_publisher(self):
+        with TemporaryDirectory() as temp_root:
+            published_calls = []
+
+            class Publisher:
+                def publish(self, topic: str, payload: str, correlation_id=None) -> None:
+                    published_calls.append((topic, payload, correlation_id))
+
+            env = {
+                "DEEPSEEK_API_KEY": "test-key",
+                "DEEPSEEK_BASE_URL": "https://example.local",
+                "JOB_REPOSITORY_BACKEND": "sqlalchemy",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase2.db')}",
+                "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                "PHASE2_SHADOW_WRITE_ENABLED": "true",
+                "PHASE2_OUTBOX_DISPATCH_ENABLED": "true",
+                "LOG_FILE_PATH": os.path.join(temp_root, "app.log"),
+            }
+
+            with patch.dict(os.environ, env, clear=False):
+                app = api_service.create_app(outbox_publisher=Publisher())
+                app.state.orchestrator = NoopOrchestrator()
+                with TestClient(app) as client:
+                    client.post("/create_task", json={"song_name": "Element"})
+                    response = client.post("/internal/phase2/outbox/dispatch")
+
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertEqual(payload["attempted"], 1)
             self.assertEqual(payload["published"], 1)
             self.assertEqual(payload["failed"], 0)
             self.assertEqual(payload["pending_after"], 0)
+            self.assertEqual(len(published_calls), 1)
 
 
 if __name__ == "__main__":

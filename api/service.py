@@ -16,7 +16,6 @@ from api.config import (
 )
 from application.services.job_service import JobService
 from application.services.pipeline_orchestrator import PipelineOrchestrator
-from application.services.outbox_dispatcher import LoggingOutboxPublisher
 from infrastructure.pipeline.legacy_producer_adapter import create_default_producer_backend
 from infrastructure.storage.local_media_storage import LocalFilesystemMediaStorage
 from utils.logger_manager import LogManager
@@ -33,7 +32,7 @@ class TaskResponse(BaseModel):
     message: str
 
 
-def build_runtime_services():
+def build_runtime_services(outbox_publisher=None):
     runtime_settings = load_runtime_settings()
     session_factory = create_sqlalchemy_session_factory(runtime_settings=runtime_settings)
     job_repository = create_job_repository(
@@ -58,7 +57,7 @@ def build_runtime_services():
         session_factory=session_factory,
     )
     outbox_dispatcher = create_phase2_outbox_dispatcher(
-        publisher=LoggingOutboxPublisher(),
+        publisher=outbox_publisher,
         runtime_settings=runtime_settings,
         session_factory=session_factory,
     )
@@ -81,7 +80,7 @@ async def app_lifespan(app_instance: FastAPI):
     yield
 
 
-def create_app() -> FastAPI:
+def create_app(outbox_publisher=None) -> FastAPI:
     app_instance = FastAPI(title="Hip-hop MV 自动化工坊 API", lifespan=app_lifespan)
     (
         job_repository,
@@ -93,7 +92,7 @@ def create_app() -> FastAPI:
         outbox_dispatcher,
         session_factory,
         runtime_settings,
-    ) = build_runtime_services()
+    ) = build_runtime_services(outbox_publisher=outbox_publisher)
 
     app_instance.state.job_repository = job_repository
     app_instance.state.job_service = job_service

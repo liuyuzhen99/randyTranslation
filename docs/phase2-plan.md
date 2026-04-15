@@ -37,6 +37,7 @@ Phase 2 的目标是把当前项目从 Phase 1 的“分层架构 + 临时持久
 - `JOB_REPOSITORY_BACKEND=sqlalchemy` 可作为主 job repository 使用
 - `job.lifecycle` outbox payload 已收敛为稳定消息契约，便于后续接 RabbitMQ
 - reconcile variance threshold 已配置化，可区分“完全一致”和“在允许偏差内”
+- outbox dispatcher 默认不会假发布；只有注入真实 publisher 时才会真正 drain pending outbox
 - Phase 2 foundation 测试
 
 这意味着后面的工作不用再从“抽象不清楚”的状态开始，可以直接往 PostgreSQL 和 migration 管理推进。

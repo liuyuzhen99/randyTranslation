@@ -165,6 +165,15 @@ class Phase0ConfigValidationTests(unittest.TestCase):
                 environ={"PHASE2_OUTBOX_DISPATCH_ENABLED": "true"},
             )
 
+    def test_create_phase2_outbox_dispatcher_returns_none_without_publisher(self):
+        dispatcher = create_phase2_outbox_dispatcher(
+            environ={
+                "PHASE2_OUTBOX_DISPATCH_ENABLED": "true",
+                "DATABASE_URL": "sqlite:///:memory:",
+            },
+        )
+        self.assertIsNone(dispatcher)
+
     def test_create_phase2_outbox_dispatcher_builds_dispatcher(self):
         class Publisher:
             def publish(self, topic: str, payload: str, correlation_id=None) -> None:
