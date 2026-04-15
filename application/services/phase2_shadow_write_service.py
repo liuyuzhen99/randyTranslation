@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 
 from domain.entities import Job
+from domain.message_contracts import JobLifecycleMessage
 from domain.enums import OutboxStatus
 from domain.job_lifecycle import validate_job_transition
 from infrastructure.persistence.sqlalchemy_models import JobEventModel, JobModel, OutboxModel
@@ -132,19 +132,11 @@ class Phase2ShadowWriteService:
             logger.info("Skipping duplicate outbox shadow-write event for %s", dedupe_key)
             return
 
-        payload = json.dumps(
-            {
-                "event_type": event_type,
-                "job_id": job.job_id,
-                "song_name": job.song_name,
-                "status": job.status.value,
-                "stage": job.current_stage.value if job.current_stage else None,
-                "retry_count": job.retry_count,
-                "progress": job.progress,
-                "result": job.result,
-            },
-            ensure_ascii=False,
-        )
+        payload = JobLifecycleMessage.from_job(
+            job,
+            event_type=event_type,
+            trace_id=job.job_id,
+        ).to_payload()
         session.add(
             OutboxModel(
                 event_id=uuid.uuid4().hex,

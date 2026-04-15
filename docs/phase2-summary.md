@@ -15,6 +15,7 @@
 - 增加 outbox dispatcher 原型
 - 把 `JOB_REPOSITORY_BACKEND=sqlalchemy` 接成可运行主 repository
 - 增加 Phase 2 内部运维入口用于直接触发 reconcile 与 outbox dispatch
+- 定义 `job.lifecycle` 消息契约，并让 shadow write / reconcile / dispatch 共享同一套 payload 结构
 - 增加对应测试，确保这些基础约束不是“只停留在设计”
 
 这一步的定位是：

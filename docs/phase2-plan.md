@@ -35,6 +35,7 @@ Phase 2 的目标是把当前项目从 Phase 1 的“分层架构 + 临时持久
   - `GET /internal/phase2/reconcile`
   - `POST /internal/phase2/outbox/dispatch`
 - `JOB_REPOSITORY_BACKEND=sqlalchemy` 可作为主 job repository 使用
+- `job.lifecycle` outbox payload 已收敛为稳定消息契约，便于后续接 RabbitMQ
 - Phase 2 foundation 测试
 
 这意味着后面的工作不用再从“抽象不清楚”的状态开始，可以直接往 PostgreSQL 和 migration 管理推进。
@@ -123,6 +124,7 @@ Phase 2 的数据库设计要天然支撑：
 - shadow write reconcile 可以输出可消费报告
 - reconcile 报告可以通过运行时入口直接生成，并支持落盘
 - outbox dispatcher 可以接入真实 publisher
+- reconcile 会校验 pending outbox payload 与当前 job 状态是否漂移
 - Job / JobEvent / Outbox 的事务边界更清晰
 - CI 继续覆盖并扩展 Phase 2 tests
 

@@ -168,7 +168,11 @@ class Phase0ApiBaselineTests(unittest.TestCase):
                     response = client.post("/internal/phase2/outbox/dispatch")
 
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json(), {"published": 1, "failed": 0})
+            payload = response.json()
+            self.assertEqual(payload["attempted"], 1)
+            self.assertEqual(payload["published"], 1)
+            self.assertEqual(payload["failed"], 0)
+            self.assertEqual(payload["pending_after"], 0)
 
 
 if __name__ == "__main__":

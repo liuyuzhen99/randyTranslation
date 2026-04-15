@@ -10,6 +10,7 @@ from domain.entities import Artist, Job, JobEvent, OutboxEvent, Subtitle, Video
 from domain.enums import JobStatus, OutboxStatus, StageStatus, StageType
 from domain.exceptions import InvalidJobTransitionError
 from domain.job_lifecycle import transition_job, validate_job_transition
+from domain.message_contracts import JobLifecycleMessage
 from domain.time_utils import utc_now
 from application.services.job_service import JobService
 from application.services.outbox_dispatcher import OutboxDispatcher
@@ -29,6 +30,17 @@ from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepos
 
 
 class Phase2PostgresFoundationTests(unittest.TestCase):
+    def test_job_lifecycle_message_round_trip_and_compare(self):
+        job = Job(job_id="job-contract", song_name="song", current_stage=StageType.DOWNLOAD)
+
+        message = JobLifecycleMessage.from_job(job, event_type="job.created")
+        payload = message.to_payload()
+        decoded = JobLifecycleMessage.from_payload(payload)
+
+        self.assertEqual(decoded.schema_version, "v1")
+        self.assertEqual(decoded.trace_id, "job-contract")
+        self.assertEqual(decoded.compare_to_job(job), [])
+
     def test_job_lifecycle_rejects_invalid_transition(self):
         with self.assertRaises(InvalidJobTransitionError):
             validate_job_transition(JobStatus.PENDING, JobStatus.COMPLETED)
@@ -202,6 +214,8 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
             self.assertEqual(report.pending_outbox_count, 1)
             self.assertEqual(report.shadow_job_event_count, 1)
             self.assertEqual(report.missing_job_ids_in_shadow, [])
+            self.assertEqual(report.invalid_outbox_event_ids, [])
+            self.assertEqual(report.mismatched_outbox_payloads, {})
             self.assertNotEqual(job.job_id, "")
 
     def test_reconcile_service_reports_missing_shadow_jobs(self):
@@ -215,6 +229,66 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
             self.assertFalse(report.is_consistent)
             self.assertEqual(report.missing_job_ids_in_shadow, ["job-missing"])
+
+    def test_reconcile_service_reports_invalid_outbox_payload(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory.create_schema()
+            primary_repository = SQLAlchemyJobRepository(session_factory)
+            job = Job(job_id="job-invalid-payload", song_name="song")
+            primary_repository.create(job)
+            SQLAlchemyOutboxRepository(session_factory).add(
+                OutboxEvent(
+                    event_id="outbox-invalid-1",
+                    topic="job.lifecycle",
+                    payload='{"bad": true}',
+                    status=OutboxStatus.PENDING,
+                    dedupe_key="invalid-payload-1",
+                    correlation_id=job.job_id,
+                )
+            )
+
+            report = Phase2ReconcileService(primary_repository, session_factory).generate_report()
+
+            self.assertFalse(report.is_consistent)
+            self.assertEqual(report.invalid_outbox_event_ids, ["outbox-invalid-1"])
+
+    def test_reconcile_service_reports_outbox_payload_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory.create_schema()
+            primary_repository = SQLAlchemyJobRepository(session_factory)
+            job = Job(job_id="job-payload-mismatch", song_name="song")
+            primary_repository.create(job)
+            message = JobLifecycleMessage.from_job(job, event_type="job.created")
+            mismatched_payload = JobLifecycleMessage(
+                schema_version=message.schema_version,
+                event_type=message.event_type,
+                job_id=message.job_id,
+                song_name=message.song_name,
+                status=message.status,
+                stage=message.stage,
+                retry_count=message.retry_count,
+                progress="drifted progress",
+                result=message.result,
+                trace_id=message.trace_id,
+                timestamp=message.timestamp,
+            ).to_payload()
+            SQLAlchemyOutboxRepository(session_factory).add(
+                OutboxEvent(
+                    event_id="outbox-mismatch-1",
+                    topic="job.lifecycle",
+                    payload=mismatched_payload,
+                    status=OutboxStatus.PENDING,
+                    dedupe_key="payload-mismatch-1",
+                    correlation_id=job.job_id,
+                )
+            )
+
+            report = Phase2ReconcileService(primary_repository, session_factory).generate_report()
+
+            self.assertFalse(report.is_consistent)
+            self.assertEqual(report.mismatched_outbox_payloads, {"outbox-mismatch-1": ["progress"]})
 
     def test_reconcile_service_writes_report_file(self):
         with tempfile.TemporaryDirectory() as temp_root:
@@ -255,7 +329,12 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
             summary = OutboxDispatcher(outbox_repository, Publisher()).dispatch_pending()
 
-            self.assertEqual(summary, {"published": 1, "failed": 0})
+            self.assertEqual(summary["attempted"], 1)
+            self.assertEqual(summary["published"], 1)
+            self.assertEqual(summary["failed"], 0)
+            self.assertEqual(summary["pending_after"], 0)
+            self.assertEqual(summary["published_event_ids"], ["outbox-publish-1"])
+            self.assertEqual(summary["failed_event_ids"], [])
             self.assertEqual(len(published_calls), 1)
             self.assertEqual(
                 outbox_repository.get("outbox-publish-1").status,
@@ -284,7 +363,12 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
             summary = OutboxDispatcher(outbox_repository, FailingPublisher()).dispatch_pending()
 
-            self.assertEqual(summary, {"published": 0, "failed": 1})
+            self.assertEqual(summary["attempted"], 1)
+            self.assertEqual(summary["published"], 0)
+            self.assertEqual(summary["failed"], 1)
+            self.assertEqual(summary["pending_after"], 0)
+            self.assertEqual(summary["published_event_ids"], [])
+            self.assertEqual(summary["failed_event_ids"], ["outbox-fail-1"])
             self.assertEqual(
                 outbox_repository.get("outbox-fail-1").status,
                 OutboxStatus.FAILED,

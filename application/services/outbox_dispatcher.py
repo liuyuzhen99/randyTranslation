@@ -36,10 +36,13 @@ class OutboxDispatcher:
         self.publisher = publisher
 
     def dispatch_pending(self) -> dict[str, int]:
+        pending_events = self.outbox_repository.list_pending()
         published = 0
         failed = 0
+        published_event_ids: list[str] = []
+        failed_event_ids: list[str] = []
 
-        for event in self.outbox_repository.list_pending():
+        for event in pending_events:
             try:
                 self.publisher.publish(
                     topic=event.topic,
@@ -50,11 +53,20 @@ class OutboxDispatcher:
                     replace(event, status=OutboxStatus.PUBLISHED)
                 )
                 published += 1
+                published_event_ids.append(event.event_id)
             except Exception:
                 logger.exception("Failed to dispatch outbox event %s", event.event_id)
                 self.outbox_repository.update(
                     replace(event, status=OutboxStatus.FAILED)
                 )
                 failed += 1
+                failed_event_ids.append(event.event_id)
 
-        return {"published": published, "failed": failed}
+        return {
+            "attempted": len(pending_events),
+            "published": published,
+            "failed": failed,
+            "pending_after": len(self.outbox_repository.list_pending()),
+            "published_event_ids": published_event_ids,
+            "failed_event_ids": failed_event_ids,
+        }
