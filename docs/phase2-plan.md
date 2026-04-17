@@ -18,9 +18,9 @@ Phase 2 的目标是把当前项目从 Phase 1 的“分层架构 + 临时持久
 
 ---
 
-## 二、当前已经完成的 Phase 2 起步内容
+## 二、当前已经完成的 Phase 2 内容
 
-目前已经落下第一批基础：
+目前已经完成的内容包括：
 
 - Job 生命周期状态机基础规则
 - `StageType` / `StageStatus` / `OutboxStatus`
@@ -38,46 +38,46 @@ Phase 2 的目标是把当前项目从 Phase 1 的“分层架构 + 临时持久
 - `job.lifecycle` outbox payload 已收敛为稳定消息契约，便于后续接 RabbitMQ
 - reconcile variance threshold 已配置化，可区分“完全一致”和“在允许偏差内”
 - outbox dispatcher 默认不会假发布；只有注入真实 publisher 时才会真正 drain pending outbox
+- Alembic 现在会优先读取项目 `.env` 中的 `DATABASE_URL`
+- 运行时配置现在会自动读取项目 `.env`
+- 已修复真实 PostgreSQL 下 `job_events` 状态约束重名问题
+- 已在真实 PostgreSQL 上验证：
+  - `alembic upgrade head` 成功
+  - `jobs / job_events / outbox` 实际写入成功
+  - `/internal/phase2/reconcile` 返回一致报告
 - Phase 2 foundation 测试
 
-这意味着后面的工作不用再从“抽象不清楚”的状态开始，可以直接往 PostgreSQL 和 migration 管理推进。
+这意味着 Phase 2 的“纯代码部分 + 真实 PostgreSQL 验证”已经基本完成。
 
 ---
 
 ## 三、下一批推荐实施顺序
 
-### 1. 把 SQLAlchemy schema 对齐到 PostgreSQL 语义
+### 1. 提交并合并 Phase 2 PR
 
-当前模型已经有基础约束，但下一步要更明确补齐：
+当前已经具备提 PR 的条件：
 
-- 更清晰的 enum/check constraint 命名
-- PostgreSQL 下的索引策略
-- 外键删除/更新策略
-- created_at / updated_at 等时间字段策略
+- 模型、repository、shadow write、reconcile、outbox dispatcher 原型都已完成
+- 真实 PostgreSQL migration 已验证通过
+- 真实 PostgreSQL 写入和 reconcile 已验证通过
 
-### 2. 强化 `job_events` / outbox / shadow write
+### 2. 开始 Phase 3 预备设计
 
-当前已经有最小闭环、基础 reconcile 和 dispatcher 原型，但还需要继续增强：
+下一步最自然的是进入 RabbitMQ 接入前的准备：
 
-- 明确失败重试和补偿策略
-- 逐步扩大 shadow write 范围
-- 为后续 dispatcher 接 RabbitMQ 留出稳定接口
+- 明确 queue topology
+- 明确 publisher 接口与消息发布边界
+- 明确 outbox 到真实 broker 的调度路径
 
-### 3. 设计 shadow write 的 reconciliation 机制
+### 3. 保持 Phase 2 范围边界
 
-在真正把 SQLite 全切掉之前，需要先决定：
+Phase 2 之后不建议继续在没有真实 RabbitMQ 的情况下扩展大量消息系统实现。
 
-- 哪些数据先 shadow write 到 SQLAlchemy/PostgreSQL
-- 哪些数据暂时仍以旧路径为准
-- 如何做 reconcile
+后续只应继续做：
 
-建议第一批 shadow write 从：
-
-- jobs
-- job_events
-- outbox
-
-开始，而不是一上来全量替换所有实体。
+- 文档收尾
+- PR 合并
+- 为 Phase 3 设计消息边界
 
 ---
 
@@ -112,37 +112,38 @@ Phase 2 的数据库设计要天然支撑：
 
 ## 五、当前定义的 Phase 2 第一批完成标准
 
-这一轮已经完成的第一批标准是：
+当前可以认为已经完成的标准是：
 
 - 有明确的生命周期规则
 - 有 SQLAlchemy 关系模型
 - 有 repository 基础实现
-- 有能跑通的测试
+- 有 shadow write / reconcile / outbox dispatcher 原型
+- Alembic migration 在真实 PostgreSQL 上已跑通
+- 真实 PostgreSQL 下 `jobs / job_events / outbox` 写入已验证
+- reconcile 报告在真实 PostgreSQL 下已验证
+- 测试已覆盖并通过
 
-下一批完成标准建议定义为：
+剩余未完成的部分已经明显属于下一阶段或外部系统接入：
 
-- Phase 2 在真实 PostgreSQL 实例上跑通
-- Alembic migration 在 clean DB 上完成 upgrade/downgrade
-- shadow write reconcile 可以输出可消费报告
-- reconcile 报告可以通过运行时入口直接生成，并支持落盘
-- outbox dispatcher 可以接入真实 publisher
-- reconcile 会校验 pending outbox payload 与当前 job 状态是否漂移
-- reconcile 支持缺失 job / 字段漂移 / 非法 payload / payload 漂移的阈值配置
-- Job / JobEvent / Outbox 的事务边界更清晰
-- CI 继续覆盖并扩展 Phase 2 tests
+- 真实 RabbitMQ publisher
+- outbox 到 broker 的真实发布链路
+- Phase 3 的异步 worker / ack-nack / retry / DLQ
 
 ---
 
 ## 六、总结
 
-Phase 2 现在已经不再是纯设计阶段，而是已经进入“基础模型和规则开始落地”的状态。
+Phase 2 现在已经不再只是“基础模型和规则开始落地”的状态，而是已经完成了：
+
+- 代码实现
+- 本地测试
+- 真实 PostgreSQL migration
+- 真实 PostgreSQL 写入与 reconcile 验证
 
 后续继续推进时，最推荐的顺序是：
 
-1. PostgreSQL 实例接入与配置清理
-2. Alembic 在真实 DB 上验证
-3. reconcile 报告持久化或定时任务化
-4. outbox dispatcher 接真实 publisher
-5. Phase 2 到 Phase 3 的消息发布桥接
+1. 提交并合并 Phase 2 PR
+2. 进入 Phase 3 设计
+3. 准备真实 RabbitMQ 接入
 
 这样推进，风险最低，也最符合这个项目对一致性和可演进性的要求。

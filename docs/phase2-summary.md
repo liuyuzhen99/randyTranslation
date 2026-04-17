@@ -18,11 +18,18 @@
 - 定义 `job.lifecycle` 消息契约，并让 shadow write / reconcile / dispatch 共享同一套 payload 结构
 - 给 reconcile 增加了可配置 variance threshold，用于区分严格不一致和可接受偏差
 - 撤掉了默认日志型 outbox publisher，避免在没有真实消息系统时把事件误标记为 `published`
+- Alembic 现在会优先读取项目 `.env` 里的 `DATABASE_URL`
+- 运行时配置现在会自动读取项目 `.env`
+- 已修复真实 PostgreSQL 下 `job_events` 枚举约束重名问题
+- 已完成真实 PostgreSQL 验证：
+  - `alembic upgrade head` 成功
+  - `jobs / job_events / outbox` 实际写入成功
+  - `/internal/phase2/reconcile` 返回一致报告
 - 增加对应测试，确保这些基础约束不是“只停留在设计”
 
 这一步的定位是：
 
-**先把 PostgreSQL Foundation 的领域约束和 ORM 模型打牢，为后续 Alembic 和真实 PostgreSQL 接入做准备。**
+**先把 PostgreSQL Foundation 的领域约束和 ORM 模型打牢，并完成真实 PostgreSQL 的接入验证。**
 
 ---
 
