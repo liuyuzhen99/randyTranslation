@@ -63,21 +63,28 @@ Phase 2 的目标是把当前项目从 Phase 1 的“分层架构 + 临时持久
 
 ### 2. 开始 Phase 3 预备设计
 
-下一步最自然的是进入 RabbitMQ 接入前的准备：
+下一步最自然的是先进入“工作流建模 + 人工审核 + BFF API”设计，而不是立刻做 RabbitMQ：
 
-- 明确 queue topology
-- 明确 publisher 接口与消息发布边界
-- 明确 outbox 到真实 broker 的调度路径
+- 明确前端四个主页面需要的后端服务：
+  - artists
+  - audit queue
+  - pipeline
+  - library
+- 明确 BFF 层要暴露哪些 screen-oriented DTO 和接口
+- 明确人工审核插入点：
+  - taste audit 之后的 manual review
+  - translation quality review
+- 明确哪些“喜欢这首歌/喜欢这个翻译”的动作会回写到 RAG 记忆中
 
 ### 3. 保持 Phase 2 范围边界
 
-Phase 2 之后不建议继续在没有真实 RabbitMQ 的情况下扩展大量消息系统实现。
+Phase 2 之后不建议继续在没有真实 RabbitMQ 的情况下扩展大量消息系统实现，也不建议在没有明确前端屏幕契约前就盲目设计大量内部 API。
 
 后续只应继续做：
 
 - 文档收尾
 - PR 合并
-- 为 Phase 3 设计消息边界
+- 为 Phase 3 设计工作流服务边界、人工审核边界、以及 BFF API 边界
 
 ---
 
@@ -125,9 +132,11 @@ Phase 2 的数据库设计要天然支撑：
 
 剩余未完成的部分已经明显属于下一阶段或外部系统接入：
 
+- 面向前端页面的 BFF API
+- 人工审核状态和操作流
 - 真实 RabbitMQ publisher
 - outbox 到 broker 的真实发布链路
-- Phase 3 的异步 worker / ack-nack / retry / DLQ
+- 后续异步 worker / ack-nack / retry / DLQ
 
 ---
 
@@ -143,7 +152,7 @@ Phase 2 现在已经不再只是“基础模型和规则开始落地”的状态
 后续继续推进时，最推荐的顺序是：
 
 1. 提交并合并 Phase 2 PR
-2. 进入 Phase 3 设计
-3. 准备真实 RabbitMQ 接入
+2. 进入 Phase 3 设计：先完成 workflow / manual review / BFF API 方案
+3. 再进入 RabbitMQ 接入与异步化拆分
 
 这样推进，风险最低，也最符合这个项目对一致性和可演进性的要求。
