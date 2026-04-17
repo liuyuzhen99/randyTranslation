@@ -39,6 +39,26 @@ outbox_status_enum = Enum(
 )
 
 
+def build_job_status_enum(constraint_name: str) -> Enum:
+    return Enum(
+        JobStatus,
+        native_enum=False,
+        create_constraint=True,
+        validate_strings=True,
+        name=constraint_name,
+    )
+
+
+def build_stage_type_enum(constraint_name: str) -> Enum:
+    return Enum(
+        StageType,
+        native_enum=False,
+        create_constraint=True,
+        validate_strings=True,
+        name=constraint_name,
+    )
+
+
 class ArtistModel(Base):
     __tablename__ = "artists"
 
@@ -98,7 +118,10 @@ class JobModel(Base):
 
     job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     song_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    status: Mapped[JobStatus] = mapped_column(job_status_enum, nullable=False)
+    status: Mapped[JobStatus] = mapped_column(
+        build_job_status_enum("ck_jobs_status"),
+        nullable=False,
+    )
     progress: Mapped[str] = mapped_column(Text, nullable=False)
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
     current_stage: Mapped[StageType | None] = mapped_column(stage_type_enum, nullable=True)
@@ -120,9 +143,18 @@ class JobEventModel(Base):
         ForeignKey("jobs.job_id", ondelete="CASCADE"),
         nullable=False,
     )
-    from_status: Mapped[JobStatus | None] = mapped_column(job_status_enum, nullable=True)
-    to_status: Mapped[JobStatus] = mapped_column(job_status_enum, nullable=False)
-    stage: Mapped[StageType | None] = mapped_column(stage_type_enum, nullable=True)
+    from_status: Mapped[JobStatus | None] = mapped_column(
+        build_job_status_enum("ck_job_events_from_status"),
+        nullable=True,
+    )
+    to_status: Mapped[JobStatus] = mapped_column(
+        build_job_status_enum("ck_job_events_to_status"),
+        nullable=False,
+    )
+    stage: Mapped[StageType | None] = mapped_column(
+        build_stage_type_enum("ck_job_events_stage"),
+        nullable=True,
+    )
     message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
@@ -143,4 +175,3 @@ class OutboxModel(Base):
     aggregate_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-

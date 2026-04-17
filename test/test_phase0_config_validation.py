@@ -1,5 +1,8 @@
+import os
 import unittest
 from tempfile import TemporaryDirectory
+from pathlib import Path
+from unittest.mock import patch
 
 from api.config import (
     create_job_repository,
@@ -71,6 +74,28 @@ class Phase0ConfigValidationTests(unittest.TestCase):
     def test_load_runtime_settings_rejects_negative_reconcile_threshold(self):
         with self.assertRaises(RuntimeError):
             load_runtime_settings({"PHASE2_RECONCILE_MAX_MISSING_JOBS": "-1"})
+
+    def test_load_runtime_settings_reads_project_dotenv_when_environ_not_provided(self):
+        with TemporaryDirectory() as temp_root:
+            env_path = Path(temp_root) / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "JOB_REPOSITORY_BACKEND=sqlalchemy",
+                        "DATABASE_URL=sqlite:///:memory:",
+                        "PHASE2_SHADOW_WRITE_ENABLED=true",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("api.config.Path.cwd", return_value=Path(temp_root)):
+                    settings = load_runtime_settings()
+
+        self.assertEqual(settings.job_repository_backend, "sqlalchemy")
+        self.assertEqual(settings.database_url, "sqlite:///:memory:")
+        self.assertTrue(settings.phase2_shadow_write_enabled)
 
     def test_load_runtime_settings_builds_database_url_from_postgres_parts(self):
         settings = load_runtime_settings(

@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from application.services.outbox_dispatcher import OutboxDispatcher
 from application.services.phase2_reconcile_service import (
     Phase2ReconcileService,
@@ -95,6 +97,8 @@ class AppRuntimeSettings:
 
 
 def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntimeSettings:
+    if environ is None:
+        load_dotenv(Path.cwd() / ".env", override=False)
     source = environ if environ is not None else os.environ
     backend = source.get("JOB_REPOSITORY_BACKEND", "memory").strip().lower() or "memory"
 

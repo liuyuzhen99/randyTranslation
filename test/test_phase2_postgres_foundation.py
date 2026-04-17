@@ -1,5 +1,7 @@
+import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, inspect
 from alembic import command
@@ -20,6 +22,7 @@ from application.services.phase2_reconcile_service import (
 )
 from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
 from infrastructure.persistence.sqlalchemy_models import Base
+from infrastructure.persistence.sqlalchemy_models import JobEventModel
 from infrastructure.persistence.sqlalchemy_repositories import (
     SQLAlchemyArtistRepository,
     SQLAlchemyJobEventRepository,
@@ -77,6 +80,17 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
         self.assertIn("ix_jobs_status", job_indexes)
         self.assertIn("ix_videos_spotify_id", video_indexes)
         self.assertIn("ix_videos_processed_status", video_indexes)
+
+    def test_job_event_status_constraints_use_distinct_names(self):
+        constraint_names = {
+            constraint.name
+            for constraint in JobEventModel.__table__.constraints
+            if constraint.name
+        }
+
+        self.assertIn("ck_job_events_from_status", constraint_names)
+        self.assertIn("ck_job_events_to_status", constraint_names)
+        self.assertEqual(len(constraint_names), len(set(constraint_names)))
 
     def test_sqlalchemy_job_repository_enforces_transition_rules(self):
         with tempfile.TemporaryDirectory() as temp_root:
@@ -421,15 +435,15 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
                 "alembic",
             )
             config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
+            with patch.dict(os.environ, {"DATABASE_URL": f"sqlite:///{database_path}"}, clear=False):
+                command.upgrade(config, "head")
+                inspector = inspect(create_engine(f"sqlite:///{database_path}", future=True))
+                self.assertIn("jobs", inspector.get_table_names())
+                self.assertIn("job_events", inspector.get_table_names())
 
-            command.upgrade(config, "head")
-            inspector = inspect(create_engine(f"sqlite:///{database_path}", future=True))
-            self.assertIn("jobs", inspector.get_table_names())
-            self.assertIn("job_events", inspector.get_table_names())
-
-            command.downgrade(config, "base")
-            inspector = inspect(create_engine(f"sqlite:///{database_path}", future=True))
-            self.assertNotIn("jobs", inspector.get_table_names())
+                command.downgrade(config, "base")
+                inspector = inspect(create_engine(f"sqlite:///{database_path}", future=True))
+                self.assertNotIn("jobs", inspector.get_table_names())
 
 
 if __name__ == "__main__":

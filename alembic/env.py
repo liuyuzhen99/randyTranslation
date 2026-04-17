@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import sys
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from infrastructure.persistence.alembic_runtime_config import resolve_database_url
 from infrastructure.persistence.sqlalchemy_models import Base
 
 config = context.config
@@ -13,12 +20,13 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+resolved_database_url = resolve_database_url(config.get_main_option("sqlalchemy.url"))
+config.set_main_option("sqlalchemy.url", resolved_database_url)
 
 
 def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=resolved_database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         compare_type=True,
