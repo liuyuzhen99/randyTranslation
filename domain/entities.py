@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from domain.enums import JobStatus
+from domain.enums import JobStatus, OutboxStatus, StageStatus, StageType
+from domain.time_utils import utc_now
 
 
 @dataclass
@@ -21,7 +22,7 @@ class Video:
     spotify_id: Optional[str]
     title: str
     published_at: Optional[datetime] = None
-    processed_status: str = "new"
+    processed_status: StageStatus = StageStatus.PENDING
     local_video_path: Optional[str] = None
     srt_path: Optional[str] = None
     final_video_path: Optional[str] = None
@@ -35,7 +36,7 @@ class Subtitle:
     end_time: float
     en_text: str
     zh_text: Optional[str] = None
-    status: str = "raw"
+    status: StageStatus = StageStatus.PENDING
 
 
 @dataclass
@@ -43,7 +44,22 @@ class OutboxEvent:
     event_id: str
     topic: str
     payload: str
-    status: str = "pending"
+    status: OutboxStatus = OutboxStatus.PENDING
+    aggregate_id: Optional[str] = None
+    dedupe_key: Optional[str] = None
+    correlation_id: Optional[str] = None
+
+
+@dataclass
+class JobEvent:
+    event_id: str
+    job_id: str
+    from_status: Optional[JobStatus]
+    to_status: JobStatus
+    stage: Optional[StageType] = None
+    message: str = ""
+    retry_count: int = 0
+    created_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass
@@ -61,6 +77,10 @@ class Job:
     status: JobStatus = JobStatus.PENDING
     progress: str = "已加入队列"
     result: Optional[str] = None
+    current_stage: Optional[StageType] = None
+    retry_count: int = 0
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
 
     def to_api_dict(self) -> dict:
         return {

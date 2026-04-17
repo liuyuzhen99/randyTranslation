@@ -24,10 +24,6 @@ steps:
 - during the automation process, if user found the music match user's taste, this music can be selected to add to taste RAG
 - when checking the final result of wired video, if marked translation nice, this music can also be selected to add to translation RAG
 
-# notes
-
-do not consider the api folder as important as it is, the original code is just a test or hello world version of FastAPI. You need to help me figure out the orchester and what service this backend can provide.
-
 # summary
 
 summarize what you've done at each phase at folder docs with file name phase\*-summary.md.
@@ -39,3 +35,37 @@ list down:
 - explain it with details so it's easier to understand
 - the summerize should be also in detail and complete
 - the file should be wrote in Chinese language
+
+# tips
+
+if you met network issue such as timeout during git push, run "zsh -lic 'proxy'" at the command line, that should fix the issue.
+
+# frontend integration
+
+frontend project git: https://github.com/liuyuzhen99/audit-flow.git
+how to connect with Frontend:
+┌─────────────────────────────────────────────────┐
+│ 前端 (Next.js) │
+└────────────────────┬────────────────────────────┘
+│ HTTP / SSE / WebSocket
+┌────────────────────▼────────────────────────────┐
+│ BFF 层（Backend For Frontend） │
+│ 按 UI Screen 组合数据，不暴露领域细节 │
+│ 建议：直接放在你的 api/ 目录下，作为 router 层 │
+└────────────────────┬────────────────────────────┘
+│ 内部调用
+┌────────────────────▼────────────────────────────┐
+│ Domain Services（你的 application/） │
+│ ArtistService / AuditService / PipelineService│
+│ LibraryService / TranslationService │
+└────────────────────┬────────────────────────────┘
+│
+┌────────────────────▼────────────────────────────┐
+│ Infrastructure │
+│ Spotify / YouTube RSS / Whisper / RAG / DB │
+└─────────────────────────────────────────────────┘
+
+- interface design with frontend: - page 1: artists - page 2: audit queue - page 3: pipeline - page 4: library
+  you should check the frontend design and consider how to design the backend project
+  You need to help me figure out the orchester and what service this backend can provide.
+  you should also consider where to add the integration of manual review (specified at ideas) with frontend
