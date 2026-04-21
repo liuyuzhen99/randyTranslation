@@ -42,7 +42,7 @@ if you met network issue such as timeout during git push, run "zsh -lic 'proxy'"
 
 # frontend integration
 
-frontend project git: https://github.com/liuyuzhen99/audit-flow.git
+frontend project git: https://github.com/liuyuzhen99/audit-flow.git, it's also located at /Users/randy/Documents/code/randyTranslation/vibeFrontTranslation
 how to connect with Frontend:
 ┌─────────────────────────────────────────────────┐
 │ 前端 (Next.js) │

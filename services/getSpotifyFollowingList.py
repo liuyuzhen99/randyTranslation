@@ -10,18 +10,23 @@ logger = log_manager.get_task_logger("SPOTIFY_SYNC")
 
 load_dotenv()  # 从 .env 文件加载环境变量
 
-# 1. 认证设置 (信息在 Spotify Developer Dashboard 获取)
-sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-    client_id=os.getenv("SPOTIPY_CLIENT_ID"),
-    client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
-    redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
-    scope="user-follow-read",
-    open_browser=True,
-    show_dialog=True
-))
+def create_spotify_client(open_browser: bool = True):
+    # 延迟初始化，避免模块导入时就触发 OAuth 或浏览器依赖。
+    return spotipy.Spotify(
+        auth_manager=SpotifyOAuth(
+            client_id=os.getenv("SPOTIPY_CLIENT_ID"),
+            client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
+            redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
+            scope="user-follow-read",
+            open_browser=open_browser,
+            show_dialog=True,
+        )
+    )
 
-def get_all_followed_artists():
+
+def get_all_followed_artists(open_browser: bool = True):
     artists = []
+    sp = create_spotify_client(open_browser=open_browser)
     logger.info("开始从 Spotify 获取关注艺人列表...")
     # 第一次请求
     try:

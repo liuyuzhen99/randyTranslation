@@ -17,6 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from domain.enums import JobStatus, OutboxStatus, StageStatus, StageType
+from domain.enums import CandidateStatus, SyncStatus
 
 
 class Base(DeclarativeBase):
@@ -33,6 +34,18 @@ stage_status_enum = Enum(
 stage_type_enum = Enum(StageType, native_enum=False, create_constraint=True, validate_strings=True)
 outbox_status_enum = Enum(
     OutboxStatus,
+    native_enum=False,
+    create_constraint=True,
+    validate_strings=True,
+)
+sync_status_enum = Enum(
+    SyncStatus,
+    native_enum=False,
+    create_constraint=True,
+    validate_strings=True,
+)
+candidate_status_enum = Enum(
+    CandidateStatus,
     native_enum=False,
     create_constraint=True,
     validate_strings=True,
@@ -66,6 +79,40 @@ class ArtistModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     yt_channel_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    sync_status: Mapped[SyncStatus] = mapped_column(sync_status_enum, nullable=False)
+    last_sync_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    last_sync_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    last_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_channel_resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    last_discovery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+
+
+class ArtistSyncRunModel(Base):
+    __tablename__ = "artist_sync_runs"
+    __table_args__ = (
+        Index("ix_artist_sync_runs_spotify_id_started_at", "spotify_id", "started_at"),
+        Index("ix_artist_sync_runs_status", "status"),
+        CheckConstraint("retry_count >= 0", name="ck_artist_sync_runs_retry_count_non_negative"),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    spotify_id: Mapped[str | None] = mapped_column(
+        String(128),
+        ForeignKey("artists.spotify_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[SyncStatus] = mapped_column(sync_status_enum, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    discovered_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trigger: Mapped[str] = mapped_column(String(32), nullable=False, default="system")
 
 
 class VideoModel(Base):
@@ -175,3 +222,35 @@ class OutboxModel(Base):
     aggregate_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class VideoCandidateModel(Base):
+    __tablename__ = "video_candidates"
+    __table_args__ = (
+        UniqueConstraint("spotify_id", "video_id", name="uq_video_candidates_artist_video"),
+        Index("ix_video_candidates_spotify_id_published_at", "spotify_id", "published_at"),
+        Index("ix_video_candidates_status", "status"),
+    )
+
+    candidate_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    spotify_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("artists.spotify_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    video_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    channel_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(64), nullable=False, default="youtube_rss")
+    status: Mapped[CandidateStatus] = mapped_column(candidate_status_enum, nullable=False)
+    ingestion_status: Mapped[SyncStatus] = mapped_column(sync_status_enum, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    discovery_run_id: Mapped[str | None] = mapped_column(
+        String(128),
+        ForeignKey("artist_sync_runs.run_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

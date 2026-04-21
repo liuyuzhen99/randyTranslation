@@ -4,7 +4,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from domain.enums import JobStatus, OutboxStatus, StageStatus, StageType
+from domain.enums import (
+    CandidateStatus,
+    JobStatus,
+    OutboxStatus,
+    StageStatus,
+    StageType,
+    SyncStatus,
+)
 from domain.time_utils import utc_now
 
 
@@ -14,6 +21,12 @@ class Artist:
     name: str
     yt_channel_id: Optional[str] = None
     status: str = "active"
+    sync_status: SyncStatus = SyncStatus.PENDING
+    last_sync_started_at: Optional[datetime] = None
+    last_sync_completed_at: Optional[datetime] = None
+    last_sync_error: Optional[str] = None
+    last_channel_resolved_at: Optional[datetime] = None
+    last_discovery_at: Optional[datetime] = None
 
 
 @dataclass
@@ -48,6 +61,38 @@ class OutboxEvent:
     aggregate_id: Optional[str] = None
     dedupe_key: Optional[str] = None
     correlation_id: Optional[str] = None
+
+
+@dataclass
+class ArtistSyncRun:
+    run_id: str
+    spotify_id: Optional[str]
+    source_kind: str
+    status: SyncStatus = SyncStatus.PENDING
+    started_at: datetime = field(default_factory=utc_now)
+    completed_at: Optional[datetime] = None
+    failure_reason: Optional[str] = None
+    retry_count: int = 0
+    discovered_count: int = 0
+    trigger: str = "system"
+
+
+@dataclass
+class VideoCandidate:
+    candidate_id: str
+    spotify_id: str
+    video_id: str
+    channel_id: Optional[str]
+    title: str
+    source_url: str
+    source_kind: str = "youtube_rss"
+    status: CandidateStatus = CandidateStatus.PENDING_REVIEW
+    ingestion_status: SyncStatus = SyncStatus.COMPLETED
+    published_at: Optional[datetime] = None
+    first_seen_at: datetime = field(default_factory=utc_now)
+    last_seen_at: datetime = field(default_factory=utc_now)
+    discovery_run_id: Optional[str] = None
+    failure_reason: Optional[str] = None
 
 
 @dataclass
