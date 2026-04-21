@@ -3,7 +3,17 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Iterable, Optional
 
-from domain.entities import Artist, Job, JobEvent, OutboxEvent, Subtitle, VectorRecord, Video
+from domain.entities import (
+    Artist,
+    ArtistSyncRun,
+    Job,
+    JobEvent,
+    OutboxEvent,
+    Subtitle,
+    VectorRecord,
+    Video,
+    VideoCandidate,
+)
 
 
 class ArtistRepository(ABC):
@@ -13,6 +23,10 @@ class ArtistRepository(ABC):
 
     @abstractmethod
     def get(self, spotify_id: str) -> Optional[Artist]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_all(self) -> list[Artist]:
         raise NotImplementedError
 
 
@@ -79,6 +93,38 @@ class JobEventRepository(ABC):
 
     @abstractmethod
     def list_for_job(self, job_id: str) -> list[JobEvent]:
+        raise NotImplementedError
+
+
+class ArtistSyncRunRepository(ABC):
+    @abstractmethod
+    def create(self, run: ArtistSyncRun) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update(self, run: ArtistSyncRun) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get(self, run_id: str) -> ArtistSyncRun | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_for_artist(self, spotify_id: str) -> list[ArtistSyncRun]:
+        raise NotImplementedError
+
+
+class CandidateRepository(ABC):
+    @abstractmethod
+    def upsert(self, candidate: VideoCandidate) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get(self, candidate_id: str) -> VideoCandidate | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_for_artist(self, spotify_id: str) -> list[VideoCandidate]:
         raise NotImplementedError
 
 

@@ -133,6 +133,13 @@ class SQLiteArtistRepository(_SQLiteRepositoryMixin, ArtistRepository):
                 return None
             return Artist(**dict(row))
 
+    def list_all(self) -> list[Artist]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT spotify_id, name, yt_channel_id, status FROM artists ORDER BY name ASC"
+            ).fetchall()
+            return [Artist(**dict(row)) for row in rows]
+
 
 class SQLiteVideoRepository(_SQLiteRepositoryMixin, VideoRepository):
     def upsert(self, video: Video) -> None:

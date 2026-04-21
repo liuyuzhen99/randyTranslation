@@ -8,6 +8,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from application.services.outbox_dispatcher import OutboxDispatcher
+from application.services.phase3_catalog_service import (
+    CandidateCatalogService,
+    CandidateDiscoveryPayload,
+    Phase3Providers,
+)
 from application.services.phase2_reconcile_service import (
     Phase2ReconcileService,
     Phase2ReconcileThresholds,
@@ -16,6 +21,9 @@ from domain.repositories import JobRepository
 from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
 from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
 from infrastructure.persistence.sqlalchemy_repositories import (
+    SQLAlchemyArtistRepository,
+    SQLAlchemyArtistSyncRunRepository,
+    SQLAlchemyCandidateRepository,
     SQLAlchemyJobRepository,
     SQLAlchemyOutboxRepository,
     SQLAlchemySessionFactory,
@@ -285,3 +293,84 @@ def create_phase2_outbox_dispatcher(
             "PHASE2_OUTBOX_DISPATCH_ENABLED requires DATABASE_URL to be configured."
         )
     return OutboxDispatcher(SQLAlchemyOutboxRepository(active_session_factory), publisher)
+
+
+def create_phase3_catalog_service(
+    providers: Phase3Providers | None = None,
+    environ: Mapping[str, str] | None = None,
+    runtime_settings: AppRuntimeSettings | None = None,
+    session_factory: SQLAlchemySessionFactory | None = None,
+) -> CandidateCatalogService | None:
+    settings = runtime_settings or load_runtime_settings(environ)
+    active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
+    if active_session_factory is None:
+        return None
+    active_providers = providers or Phase3Providers(
+        followed_artists_lookup=_default_followed_artists_lookup_provider,
+        channel_lookup=_default_channel_lookup_provider,
+        candidate_lookup=_default_candidate_lookup_provider,
+    )
+    return CandidateCatalogService(
+        artist_repository=SQLAlchemyArtistRepository(active_session_factory),
+        artist_sync_run_repository=SQLAlchemyArtistSyncRunRepository(active_session_factory),
+        candidate_repository=SQLAlchemyCandidateRepository(active_session_factory),
+        providers=active_providers,
+    )
+
+
+def _default_followed_artists_lookup_provider():
+    from domain.entities import Artist
+    from services.getSpotifyFollowingList import get_all_followed_artists
+
+    return [
+        Artist(spotify_id=item["id"], name=item["name"])
+        for item in get_all_followed_artists(open_browser=False)
+    ]
+
+
+def _default_channel_lookup_provider(artist) -> str | None:
+    if artist.yt_channel_id:
+        return artist.yt_channel_id
+
+    from services.getChannelIDfromFollowingList import fetch_youtube_channel_ids
+
+    return fetch_youtube_channel_ids([artist.name]).get(artist.name)
+
+
+def _default_candidate_lookup_provider(artist, days: int) -> list[CandidateDiscoveryPayload]:
+    if not artist.yt_channel_id:
+        return []
+
+    from datetime import datetime, timedelta
+    import time
+
+    import feedparser
+
+    from services.getLatestMVfromRss import is_valid_mv
+
+    deadline = datetime.now() - timedelta(days=days)
+    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={artist.yt_channel_id}"
+    feed = feedparser.parse(rss_url)
+    payloads: list[CandidateDiscoveryPayload] = []
+    for entry in getattr(feed, "entries", []):
+        published_parsed = getattr(entry, "published_parsed", None)
+        if not published_parsed:
+            continue
+        published_at = datetime.fromtimestamp(time.mktime(published_parsed))
+        if published_at <= deadline:
+            continue
+        is_valid, _reason = is_valid_mv(entry.title, entry.link)
+        if not is_valid:
+            continue
+        video_id = getattr(entry, "yt_videoid", None)
+        if not video_id:
+            continue
+        payloads.append(
+            CandidateDiscoveryPayload(
+                video_id=video_id,
+                title=entry.title,
+                source_url=entry.link,
+                published_at=published_at,
+            )
+        )
+    return payloads
