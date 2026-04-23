@@ -5,26 +5,41 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from domain.entities import Artist, ArtistSyncRun, Job, JobEvent, OutboxEvent, Subtitle, Video, VideoCandidate
+from domain.entities import (
+    AuditLogEntry,
+    Artist,
+    ArtistSyncRun,
+    Job,
+    JobEvent,
+    OutboxEvent,
+    ReviewItem,
+    Subtitle,
+    Video,
+    VideoCandidate,
+)
 from domain.job_lifecycle import validate_job_transition
 from domain.time_utils import utc_now
 from domain.repositories import (
+    AuditLogRepository,
     ArtistRepository,
     ArtistSyncRunRepository,
     CandidateRepository,
     JobEventRepository,
     JobRepository,
     OutboxRepository,
+    ReviewRepository,
     SubtitleRepository,
     VideoRepository,
 )
 from infrastructure.persistence.sqlalchemy_models import (
+    AuditLogEntryModel,
     ArtistModel,
     ArtistSyncRunModel,
     Base,
     JobEventModel,
     JobModel,
     OutboxModel,
+    ReviewItemModel,
     SubtitleModel,
     VideoModel,
     VideoCandidateModel,
@@ -480,6 +495,145 @@ class SQLAlchemyCandidateRepository(CandidateRepository):
             discovery_run_id=row.discovery_run_id,
             failure_reason=row.failure_reason,
         )
+
+
+class SQLAlchemyReviewRepository(ReviewRepository):
+    def __init__(self, session_factory: SQLAlchemySessionFactory) -> None:
+        self.session_factory = session_factory
+
+    def create(self, review: ReviewItem) -> None:
+        with self.session_factory.session_scope() as session:
+            session.add(
+                ReviewItemModel(
+                    review_id=review.review_id,
+                    subject_kind=review.subject_kind,
+                    subject_id=review.subject_id,
+                    spotify_id=review.spotify_id,
+                    review_type=review.review_type,
+                    status=review.status,
+                    version=review.version,
+                    decision_comment=review.decision_comment,
+                    decided_by=review.decided_by,
+                    decided_at=review.decided_at,
+                    created_at=review.created_at,
+                    updated_at=review.updated_at,
+                )
+            )
+
+    def update(self, review: ReviewItem) -> None:
+        with self.session_factory.session_scope() as session:
+            row = session.get(ReviewItemModel, review.review_id)
+            if row is None:
+                self.create(review)
+                return
+
+            row.subject_kind = review.subject_kind
+            row.subject_id = review.subject_id
+            row.spotify_id = review.spotify_id
+            row.review_type = review.review_type
+            row.status = review.status
+            row.version = review.version
+            row.decision_comment = review.decision_comment
+            row.decided_by = review.decided_by
+            row.decided_at = review.decided_at
+            row.updated_at = review.updated_at
+
+    def get(self, review_id: str) -> ReviewItem | None:
+        with self.session_factory.session_scope() as session:
+            row = session.get(ReviewItemModel, review_id)
+            return self._to_entity(row) if row is not None else None
+
+    def list_for_subject(self, subject_kind: str, subject_id: str) -> list[ReviewItem]:
+        with self.session_factory.session_scope() as session:
+            rows = (
+                session.execute(
+                    select(ReviewItemModel)
+                    .where(
+                        ReviewItemModel.subject_kind == subject_kind,
+                        ReviewItemModel.subject_id == subject_id,
+                    )
+                    .order_by(ReviewItemModel.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [self._to_entity(row) for row in rows]
+
+    def list_pending(self) -> list[ReviewItem]:
+        with self.session_factory.session_scope() as session:
+            rows = (
+                session.execute(
+                    select(ReviewItemModel)
+                    .where(ReviewItemModel.status == "pending")
+                    .order_by(ReviewItemModel.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [self._to_entity(row) for row in rows]
+
+    @staticmethod
+    def _to_entity(row: ReviewItemModel) -> ReviewItem:
+        return ReviewItem(
+            review_id=row.review_id,
+            subject_kind=row.subject_kind,
+            subject_id=row.subject_id,
+            spotify_id=row.spotify_id,
+            review_type=row.review_type,
+            status=row.status,
+            version=row.version,
+            decision_comment=row.decision_comment,
+            decided_by=row.decided_by,
+            decided_at=row.decided_at,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+
+class SQLAlchemyAuditLogRepository(AuditLogRepository):
+    def __init__(self, session_factory: SQLAlchemySessionFactory) -> None:
+        self.session_factory = session_factory
+
+    def add(self, log_entry: AuditLogEntry) -> None:
+        with self.session_factory.session_scope() as session:
+            session.add(
+                AuditLogEntryModel(
+                    log_id=log_entry.log_id,
+                    aggregate_type=log_entry.aggregate_type,
+                    aggregate_id=log_entry.aggregate_id,
+                    action=log_entry.action,
+                    actor_id=log_entry.actor_id,
+                    details=log_entry.details,
+                    created_at=log_entry.created_at,
+                )
+            )
+
+    def list_for_aggregate(self, aggregate_type: str, aggregate_id: str) -> list[AuditLogEntry]:
+        with self.session_factory.session_scope() as session:
+            rows = (
+                session.execute(
+                    select(AuditLogEntryModel)
+                    .where(
+                        AuditLogEntryModel.aggregate_type == aggregate_type,
+                        AuditLogEntryModel.aggregate_id == aggregate_id,
+                    )
+                    .order_by(AuditLogEntryModel.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [
+                AuditLogEntry(
+                    log_id=row.log_id,
+                    aggregate_type=row.aggregate_type,
+                    aggregate_id=row.aggregate_id,
+                    action=row.action,
+                    actor_id=row.actor_id,
+                    details=row.details,
+                    created_at=row.created_at,
+                )
+                for row in rows
+            ]
 
 
 class SQLAlchemyOutboxRepository(OutboxRepository):

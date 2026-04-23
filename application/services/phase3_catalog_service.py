@@ -32,7 +32,7 @@ class ArtistListFilters:
     page_size: int = 20
     query: str = ""
     sync_status: str = ""
-    sort: str = "name"
+    sort: str = "candidate_count_desc"
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,8 @@ class ArtistSyncService:
         trigger: str = "manual",
     ) -> dict:
         imported_artists = provider()
+        existing_artists = {artist.spotify_id: artist for artist in self.artist_repository.list_all()}
+        imported_ids = {artist.spotify_id for artist in imported_artists}
         synced_count = 0
         created_count = 0
         updated_count = 0
@@ -96,6 +98,24 @@ class ArtistSyncService:
                 created_count += 1
             else:
                 updated_count += 1
+
+        for artist_id, existing in existing_artists.items():
+            if artist_id in imported_ids or existing.status != "active":
+                continue
+            self.artist_repository.upsert(
+                Artist(
+                    spotify_id=existing.spotify_id,
+                    name=existing.name,
+                    yt_channel_id=existing.yt_channel_id,
+                    status="inactive",
+                    sync_status=SyncStatus.COMPLETED,
+                    last_sync_started_at=existing.last_sync_started_at,
+                    last_sync_completed_at=completed_at,
+                    last_sync_error=None,
+                    last_channel_resolved_at=existing.last_channel_resolved_at,
+                    last_discovery_at=existing.last_discovery_at,
+                )
+            )
         return {
             "synced_count": synced_count,
             "created_count": created_count,
@@ -189,7 +209,7 @@ class CandidateCatalogService:
         )
 
     def list_artists(self, filters: ArtistListFilters) -> tuple[list[dict], int]:
-        artists = self.artist_repository.list_all()
+        artists = [artist for artist in self.artist_repository.list_all() if artist.status == "active"]
         if filters.query:
             needle = filters.query.strip().lower()
             artists = [
@@ -202,11 +222,58 @@ class CandidateCatalogService:
                 artist for artist in artists if artist.sync_status.value == filters.sync_status
             ]
 
+        candidate_count_by_artist = {
+            artist.spotify_id: len(self.candidate_repository.list_for_artist(artist.spotify_id))
+            for artist in artists
+        }
+
         if filters.sort == "last_synced_desc":
             artists.sort(
-                key=lambda artist: artist.last_sync_completed_at or datetime.min,
+                key=lambda artist: (
+                    artist.last_sync_completed_at or datetime.min,
+                    artist.name.lower(),
+                ),
                 reverse=True,
             )
+        elif filters.sort == "last_synced_asc":
+            artists.sort(
+                key=lambda artist: (
+                    artist.last_sync_completed_at or datetime.min,
+                    artist.name.lower(),
+                ),
+            )
+        elif filters.sort == "candidate_count_desc":
+            artists.sort(
+                key=lambda artist: (
+                    candidate_count_by_artist.get(artist.spotify_id, 0),
+                    artist.name.lower(),
+                ),
+                reverse=True,
+            )
+        elif filters.sort == "candidate_count_asc":
+            artists.sort(
+                key=lambda artist: (
+                    candidate_count_by_artist.get(artist.spotify_id, 0),
+                    artist.name.lower(),
+                ),
+            )
+        elif filters.sort == "sync_status_desc":
+            artists.sort(
+                key=lambda artist: (
+                    self._sync_status_sort_rank(artist.sync_status),
+                    artist.name.lower(),
+                ),
+                reverse=True,
+            )
+        elif filters.sort == "sync_status_asc":
+            artists.sort(
+                key=lambda artist: (
+                    self._sync_status_sort_rank(artist.sync_status),
+                    artist.name.lower(),
+                ),
+            )
+        elif filters.sort == "name_desc":
+            artists.sort(key=lambda artist: artist.name.lower(), reverse=True)
         else:
             artists.sort(key=lambda artist: artist.name.lower())
 
@@ -510,3 +577,14 @@ class CandidateCatalogService:
     @staticmethod
     def _iso(value: datetime | None) -> str | None:
         return value.isoformat() if value is not None else None
+
+    @staticmethod
+    def _sync_status_sort_rank(status: SyncStatus) -> int:
+        order = {
+            SyncStatus.FAILED: 0,
+            SyncStatus.PARTIAL: 1,
+            SyncStatus.PROCESSING: 2,
+            SyncStatus.PENDING: 3,
+            SyncStatus.COMPLETED: 4,
+        }
+        return order.get(status, 99)

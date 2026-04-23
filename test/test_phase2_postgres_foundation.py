@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, inspect
@@ -36,6 +37,8 @@ from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepos
 
 
 class Phase2PostgresFoundationTests(unittest.TestCase):
+    PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
     def test_job_lifecycle_message_round_trip_and_compare(self):
         job = Job(job_id="job-contract", song_name="song", current_stage=StageType.DOWNLOAD)
 
@@ -429,10 +432,10 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
     def test_alembic_upgrade_and_downgrade_manage_phase2_schema(self):
         with tempfile.TemporaryDirectory() as temp_root:
             database_path = f"{temp_root}/alembic.db"
-            config = Config("alembic.ini")
+            config = Config(str(self.PROJECT_ROOT / "alembic.ini"))
             config.set_main_option(
                 "script_location",
-                "alembic",
+                str(self.PROJECT_ROOT / "alembic"),
             )
             config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
             with patch.dict(os.environ, {"DATABASE_URL": f"sqlite:///{database_path}"}, clear=False):

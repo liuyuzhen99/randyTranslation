@@ -16,8 +16,16 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from domain.enums import JobStatus, OutboxStatus, StageStatus, StageType
-from domain.enums import CandidateStatus, SyncStatus
+from domain.enums import (
+    CandidateStatus,
+    JobStatus,
+    OutboxStatus,
+    ReviewStatus,
+    ReviewType,
+    StageStatus,
+    StageType,
+    SyncStatus,
+)
 
 
 class Base(DeclarativeBase):
@@ -46,6 +54,18 @@ sync_status_enum = Enum(
 )
 candidate_status_enum = Enum(
     CandidateStatus,
+    native_enum=False,
+    create_constraint=True,
+    validate_strings=True,
+)
+review_type_enum = Enum(
+    ReviewType,
+    native_enum=False,
+    create_constraint=True,
+    validate_strings=True,
+)
+review_status_enum = Enum(
+    ReviewStatus,
     native_enum=False,
     create_constraint=True,
     validate_strings=True,
@@ -254,3 +274,46 @@ class VideoCandidateModel(Base):
         nullable=True,
     )
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ReviewItemModel(Base):
+    __tablename__ = "review_items"
+    __table_args__ = (
+        Index("ix_review_items_subject", "subject_kind", "subject_id"),
+        Index("ix_review_items_status_created_at", "status", "created_at"),
+        UniqueConstraint("subject_kind", "subject_id", "review_type", name="uq_review_items_subject_type"),
+        CheckConstraint("version >= 1", name="ck_review_items_version_positive"),
+    )
+
+    review_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    subject_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    spotify_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("artists.spotify_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    review_type: Mapped[ReviewType] = mapped_column(review_type_enum, nullable=False)
+    status: Mapped[ReviewStatus] = mapped_column(review_status_enum, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    decision_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+
+
+class AuditLogEntryModel(Base):
+    __tablename__ = "audit_log_entries"
+    __table_args__ = (
+        Index("ix_audit_log_entries_aggregate", "aggregate_type", "aggregate_id", "created_at"),
+        Index("ix_audit_log_entries_actor", "actor_id"),
+    )
+
+    log_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    aggregate_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    aggregate_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)

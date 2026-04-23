@@ -4,11 +4,13 @@ from abc import ABC, abstractmethod
 from typing import Iterable, Optional
 
 from domain.entities import (
+    AuditLogEntry,
     Artist,
     ArtistSyncRun,
     Job,
     JobEvent,
     OutboxEvent,
+    ReviewItem,
     Subtitle,
     VectorRecord,
     Video,
@@ -125,6 +127,38 @@ class CandidateRepository(ABC):
 
     @abstractmethod
     def list_for_artist(self, spotify_id: str) -> list[VideoCandidate]:
+        raise NotImplementedError
+
+
+class ReviewRepository(ABC):
+    @abstractmethod
+    def create(self, review: ReviewItem) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update(self, review: ReviewItem) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get(self, review_id: str) -> ReviewItem | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_for_subject(self, subject_kind: str, subject_id: str) -> list[ReviewItem]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_pending(self) -> list[ReviewItem]:
+        raise NotImplementedError
+
+
+class AuditLogRepository(ABC):
+    @abstractmethod
+    def add(self, log_entry: AuditLogEntry) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_for_aggregate(self, aggregate_type: str, aggregate_id: str) -> list[AuditLogEntry]:
         raise NotImplementedError
 
 

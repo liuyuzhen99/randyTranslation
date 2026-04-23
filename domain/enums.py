@@ -42,3 +42,17 @@ class CandidateStatus(str, Enum):
     PENDING_REVIEW = "pending_review"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
+
+
+class ReviewType(str, Enum):
+    TRANSCRIPT_REVIEW = "transcript_review"
+    TASTE_AUDIT = "taste_audit"
+    MANUAL_REVIEW = "manual_review"
+    TRANSLATION_REVIEW = "translation_review"
+    FINAL_ASSET_APPROVAL = "final_asset_approval"
+
+
+class ReviewStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"

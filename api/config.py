@@ -8,6 +8,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from application.services.outbox_dispatcher import OutboxDispatcher
+from application.services.phase4_workflow_service import (
+    Phase4WorkflowServices,
+    build_phase4_workflow_services,
+)
 from application.services.phase3_catalog_service import (
     CandidateCatalogService,
     CandidateDiscoveryPayload,
@@ -23,10 +27,14 @@ from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepos
 from infrastructure.persistence.sqlalchemy_repositories import (
     SQLAlchemyArtistRepository,
     SQLAlchemyArtistSyncRunRepository,
+    SQLAlchemyAuditLogRepository,
     SQLAlchemyCandidateRepository,
     SQLAlchemyJobRepository,
     SQLAlchemyOutboxRepository,
+    SQLAlchemyReviewRepository,
     SQLAlchemySessionFactory,
+    SQLAlchemySubtitleRepository,
+    SQLAlchemyVideoRepository,
 )
 from infrastructure.persistence.sqlite_repositories import SQLiteJobRepository
 
@@ -315,6 +323,25 @@ def create_phase3_catalog_service(
         artist_sync_run_repository=SQLAlchemyArtistSyncRunRepository(active_session_factory),
         candidate_repository=SQLAlchemyCandidateRepository(active_session_factory),
         providers=active_providers,
+    )
+
+
+def create_phase4_workflow_services(
+    environ: Mapping[str, str] | None = None,
+    runtime_settings: AppRuntimeSettings | None = None,
+    session_factory: SQLAlchemySessionFactory | None = None,
+) -> Phase4WorkflowServices | None:
+    settings = runtime_settings or load_runtime_settings(environ)
+    active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
+    if active_session_factory is None:
+        return None
+    return build_phase4_workflow_services(
+        artist_repository=SQLAlchemyArtistRepository(active_session_factory),
+        candidate_repository=SQLAlchemyCandidateRepository(active_session_factory),
+        review_repository=SQLAlchemyReviewRepository(active_session_factory),
+        audit_log_repository=SQLAlchemyAuditLogRepository(active_session_factory),
+        subtitle_repository=SQLAlchemySubtitleRepository(active_session_factory),
+        video_repository=SQLAlchemyVideoRepository(active_session_factory),
     )
 
 

@@ -8,6 +8,8 @@ from domain.enums import (
     CandidateStatus,
     JobStatus,
     OutboxStatus,
+    ReviewStatus,
+    ReviewType,
     StageStatus,
     StageType,
     SyncStatus,
@@ -93,6 +95,33 @@ class VideoCandidate:
     last_seen_at: datetime = field(default_factory=utc_now)
     discovery_run_id: Optional[str] = None
     failure_reason: Optional[str] = None
+
+
+@dataclass
+class ReviewItem:
+    review_id: str
+    subject_kind: str
+    subject_id: str
+    spotify_id: str
+    review_type: ReviewType
+    status: ReviewStatus = ReviewStatus.PENDING
+    version: int = 1
+    decision_comment: Optional[str] = None
+    decided_by: Optional[str] = None
+    decided_at: Optional[datetime] = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass
+class AuditLogEntry:
+    log_id: str
+    aggregate_type: str
+    aggregate_id: str
+    action: str
+    actor_id: str
+    details: Optional[str] = None
+    created_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass
