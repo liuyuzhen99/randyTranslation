@@ -69,3 +69,7 @@ how to connect with Frontend:
   you should check the frontend design and consider how to design the backend project
   You need to help me figure out the orchester and what service this backend can provide.
   you should also consider where to add the integration of manual review (specified at ideas) with frontend
+
+# coding
+
+each phase, if need extra resource such as install database, frontend test etc., complete the code part first and then stop and summarise what left to be done.
