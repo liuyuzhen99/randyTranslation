@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Iterable, Optional
 
 from domain.entities import (
+    ArtifactRecord,
     AuditLogEntry,
     Artist,
     ArtistSyncRun,
     Job,
     JobEvent,
     OutboxEvent,
+    PipelineStageExecution,
     ReviewItem,
     Subtitle,
     VectorRecord,
@@ -98,6 +101,24 @@ class JobEventRepository(ABC):
         raise NotImplementedError
 
 
+class PipelineStageExecutionRepository(ABC):
+    @abstractmethod
+    def upsert(self, execution: PipelineStageExecution) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_by_dedupe_key(self, dedupe_key: str) -> PipelineStageExecution | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_for_job(self, job_id: str) -> list[PipelineStageExecution]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_for_candidate(self, candidate_id: str) -> list[PipelineStageExecution]:
+        raise NotImplementedError
+
+
 class ArtistSyncRunRepository(ABC):
     @abstractmethod
     def create(self, run: ArtistSyncRun) -> None:
@@ -159,6 +180,28 @@ class AuditLogRepository(ABC):
 
     @abstractmethod
     def list_for_aggregate(self, aggregate_type: str, aggregate_id: str) -> list[AuditLogEntry]:
+        raise NotImplementedError
+
+
+class ArtifactRepository(ABC):
+    @abstractmethod
+    def upsert(self, artifact: ArtifactRecord) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get(self, artifact_id: str) -> ArtifactRecord | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_for_job(self, job_id: str) -> list[ArtifactRecord]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_for_owner(self, owner_type: str, owner_id: str) -> list[ArtifactRecord]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_expired(self, now: datetime) -> list[ArtifactRecord]:
         raise NotImplementedError
 
 

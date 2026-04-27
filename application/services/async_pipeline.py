@@ -1,0 +1,317 @@
+from __future__ import annotations
+
+import logging
+import json
+from dataclasses import dataclass, replace
+from datetime import timedelta
+from typing import Callable, Protocol
+
+from domain.entities import Job, OutboxEvent, PipelineStageExecution
+from domain.enums import JobStatus, OutboxStatus, StageStatus, StageType
+from domain.message_contracts import PipelineStageMessage, ReviewContext
+from domain.queue_topology import PipelineQueueTopology, next_stage
+from domain.repositories import JobRepository, OutboxRepository, PipelineStageExecutionRepository
+from domain.time_utils import utc_now
+
+logger = logging.getLogger(__name__)
+
+
+class StageHandler(Protocol):
+    def __call__(self, message: PipelineStageMessage) -> dict:
+        ...
+
+
+@dataclass(frozen=True)
+class WorkerResult:
+    action: str
+    job_id: str
+    stage: str
+    dedupe_key: str
+    attempt: int
+    next_retry_seconds: int = 0
+    error: str | None = None
+
+
+class AsyncPipelineCommandService:
+    def __init__(
+        self,
+        *,
+        outbox_repository: OutboxRepository,
+        topology: PipelineQueueTopology | None = None,
+        max_attempts: int = 3,
+    ) -> None:
+        self.outbox_repository = outbox_repository
+        self.topology = topology or PipelineQueueTopology()
+        self.max_attempts = max_attempts
+
+    def enqueue_first_stage(
+        self,
+        job: Job,
+        *,
+        candidate_id: str | None = None,
+        trace_id: str | None = None,
+    ) -> PipelineStageMessage:
+        message = PipelineStageMessage.build(
+            message_type="pipeline.stage.command",
+            job_id=job.job_id,
+            stage=StageType.DOWNLOAD,
+            song_name=job.song_name,
+            trace_id=trace_id,
+            max_attempts=self.max_attempts,
+            review=ReviewContext(candidate_id=candidate_id),
+            payload={"candidate_id": candidate_id},
+        )
+        self._enqueue_message(message, topic=self.topology.command_queue)
+        return message
+
+    def enqueue_stage(self, message: PipelineStageMessage) -> None:
+        self._enqueue_message(
+            message,
+            topic=self.topology.stage_queue(message.stage),
+        )
+
+    def enqueue_dlq(self, message: PipelineStageMessage, *, error: str) -> None:
+        dlq_message = PipelineStageMessage.build(
+            message_type="pipeline.stage.dlq",
+            job_id=message.job_id,
+            stage=message.stage,
+            song_name=message.song_name,
+            trace_id=message.trace_id,
+            attempt=message.retry.attempt,
+            max_attempts=message.retry.max_attempts,
+            review=message.review,
+            payload={**message.payload, "error": error},
+        )
+        dlq_message = replace(dlq_message, dedupe_key=f"{message.dedupe_key}:dlq")
+        self._enqueue_message(dlq_message, topic=self.topology.dead_letter_queue)
+
+    def _enqueue_message(self, message: PipelineStageMessage, *, topic: str) -> None:
+        self.outbox_repository.add(
+            OutboxEvent(
+                event_id=f"{message.message_type}:{message.dedupe_key}",
+                topic=topic,
+                payload=message.to_payload(),
+                status=OutboxStatus.PENDING,
+                aggregate_id=message.job_id,
+                dedupe_key=message.dedupe_key,
+                correlation_id=message.trace_id,
+            )
+        )
+
+
+class PipelineStageWorker:
+    def __init__(
+        self,
+        *,
+        job_repository: JobRepository,
+        execution_repository: PipelineStageExecutionRepository,
+        command_service: AsyncPipelineCommandService,
+        handlers: dict[StageType, StageHandler] | None = None,
+        backoff_base_seconds: int = 30,
+    ) -> None:
+        self.job_repository = job_repository
+        self.execution_repository = execution_repository
+        self.command_service = command_service
+        self.handlers = handlers or {}
+        self.backoff_base_seconds = backoff_base_seconds
+
+    def handle_payload(self, payload: str) -> WorkerResult:
+        return self.handle(PipelineStageMessage.from_payload(payload))
+
+    def handle(self, message: PipelineStageMessage) -> WorkerResult:
+        existing = self.execution_repository.get_by_dedupe_key(message.dedupe_key)
+        if existing and existing.status == StageStatus.COMPLETED:
+            return WorkerResult(
+                action="ack_duplicate",
+                job_id=message.job_id,
+                stage=message.stage.value,
+                dedupe_key=message.dedupe_key,
+                attempt=existing.attempt,
+            )
+        if existing and existing.status in {StageStatus.RETRY_SCHEDULED, StageStatus.DLQ}:
+            return WorkerResult(
+                action=f"ack_{existing.status.value}",
+                job_id=message.job_id,
+                stage=message.stage.value,
+                dedupe_key=message.dedupe_key,
+                attempt=existing.attempt,
+                error=existing.error_message,
+            )
+
+        now = utc_now()
+        execution = existing or PipelineStageExecution(
+            execution_id=f"stage:{message.dedupe_key}",
+            dedupe_key=message.dedupe_key,
+            job_id=message.job_id,
+            stage=message.stage,
+            candidate_id=message.review.candidate_id,
+            attempt=message.retry.attempt,
+            max_attempts=message.retry.max_attempts,
+            trace_id=message.trace_id,
+            created_at=now,
+        )
+        execution = replace(
+            execution,
+            status=StageStatus.PROCESSING,
+            locked_at=now,
+            updated_at=now,
+            error_message=None,
+        )
+        self.execution_repository.upsert(execution)
+        self._mark_job_processing(message)
+
+        try:
+            result_payload = self._run_handler(message)
+        except Exception as exc:
+            logger.exception("Pipeline stage failed: %s %s", message.job_id, message.stage.value)
+            return self._handle_failure(message, execution, exc)
+
+        completed_execution = replace(
+            execution,
+            status=StageStatus.COMPLETED,
+            completed_at=utc_now(),
+            result_payload=json.dumps({**message.payload, **(result_payload or {})}, ensure_ascii=False, sort_keys=True),
+            updated_at=utc_now(),
+        )
+        self.execution_repository.upsert(completed_execution)
+        self._enqueue_next_or_complete(message, result_payload or {})
+        return WorkerResult(
+            action="ack",
+            job_id=message.job_id,
+            stage=message.stage.value,
+            dedupe_key=message.dedupe_key,
+            attempt=message.retry.attempt,
+        )
+
+    def _run_handler(self, message: PipelineStageMessage) -> dict:
+        handler = self.handlers.get(message.stage)
+        if handler is None:
+            return {"status": "noop"}
+        return handler(message)
+
+    def _handle_failure(
+        self,
+        message: PipelineStageMessage,
+        execution: PipelineStageExecution,
+        exc: Exception,
+    ) -> WorkerResult:
+        next_attempt = message.retry.attempt + 1
+        error = str(exc)
+        if next_attempt >= message.retry.max_attempts:
+            failed_execution = replace(
+                execution,
+                status=StageStatus.DLQ,
+                error_message=error,
+                updated_at=utc_now(),
+            )
+            self.execution_repository.upsert(failed_execution)
+            self.command_service.enqueue_dlq(message, error=error)
+            self._mark_job_failed(message, error)
+            return WorkerResult(
+                action="dlq",
+                job_id=message.job_id,
+                stage=message.stage.value,
+                dedupe_key=message.dedupe_key,
+                attempt=message.retry.attempt,
+                error=error,
+            )
+
+        backoff_seconds = self.backoff_base_seconds * (2 ** message.retry.attempt)
+        retry_message = PipelineStageMessage.build(
+            message_type=message.message_type,
+            job_id=message.job_id,
+            stage=message.stage,
+            song_name=message.song_name,
+            trace_id=message.trace_id,
+            attempt=next_attempt,
+            max_attempts=message.retry.max_attempts,
+            backoff_seconds=backoff_seconds,
+            review=message.review,
+            payload=message.payload,
+        )
+        retry_execution = replace(
+            execution,
+            status=StageStatus.RETRY_SCHEDULED,
+            error_message=error,
+            next_retry_at=utc_now() + timedelta(seconds=backoff_seconds),
+            updated_at=utc_now(),
+        )
+        self.execution_repository.upsert(retry_execution)
+        self.command_service.enqueue_stage(retry_message)
+        return WorkerResult(
+            action="nack_retry",
+            job_id=message.job_id,
+            stage=message.stage.value,
+            dedupe_key=message.dedupe_key,
+            attempt=message.retry.attempt,
+            next_retry_seconds=backoff_seconds,
+            error=error,
+        )
+
+    def _enqueue_next_or_complete(self, message: PipelineStageMessage, result_payload: dict) -> None:
+        if result_payload.get("pause"):
+            return
+        stage = result_payload.get("next_stage") or next_stage(message.stage)
+        if isinstance(stage, str):
+            stage = StageType(stage)
+        if stage is None:
+            job = self.job_repository.get(message.job_id)
+            if job is not None:
+                self.job_repository.update(
+                    replace(
+                        job,
+                        status=JobStatus.COMPLETED,
+                        current_stage=message.stage,
+                        progress="异步 pipeline 已完成",
+                        updated_at=utc_now(),
+                    )
+                )
+            return
+        next_message = PipelineStageMessage.build(
+            message_type="pipeline.stage.command",
+            job_id=message.job_id,
+            stage=stage,
+            song_name=message.song_name,
+            trace_id=message.trace_id,
+            max_attempts=message.retry.max_attempts,
+            review=message.review,
+            payload={**message.payload, **result_payload},
+        )
+        self.command_service.enqueue_stage(next_message)
+
+    def _mark_job_processing(self, message: PipelineStageMessage) -> None:
+        job = self.job_repository.get(message.job_id)
+        if job is None:
+            self.job_repository.create(
+                Job(
+                    job_id=message.job_id,
+                    song_name=message.song_name,
+                    status=JobStatus.PROCESSING,
+                    current_stage=message.stage,
+                    progress=f"异步执行阶段: {message.stage.value}",
+                )
+            )
+            return
+        self.job_repository.update(
+            replace(
+                job,
+                status=JobStatus.PROCESSING,
+                current_stage=message.stage,
+                progress=f"异步执行阶段: {message.stage.value}",
+                updated_at=utc_now(),
+            )
+        )
+
+    def _mark_job_failed(self, message: PipelineStageMessage, error: str) -> None:
+        job = self.job_repository.get(message.job_id)
+        if job is None:
+            return
+        self.job_repository.update(
+            replace(
+                job,
+                status=JobStatus.FAILED,
+                current_stage=message.stage,
+                progress=f"异步阶段进入 DLQ: {error}",
+                updated_at=utc_now(),
+            )
+        )

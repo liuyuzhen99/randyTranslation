@@ -6,6 +6,7 @@ import uuid
 from domain.entities import AuditLogEntry, ReviewItem, Subtitle, Video, VideoCandidate
 from domain.enums import CandidateStatus, ReviewStatus, ReviewType, StageStatus
 from domain.repositories import (
+    ArtifactRepository,
     AuditLogRepository,
     ArtistRepository,
     CandidateRepository,
@@ -87,6 +88,7 @@ class WorkflowSupport:
         audit_log_repository: AuditLogRepository,
         subtitle_repository: SubtitleRepository | None = None,
         video_repository: VideoRepository | None = None,
+        artifact_repository: ArtifactRepository | None = None,
     ) -> None:
         self.artist_repository = artist_repository
         self.candidate_repository = candidate_repository
@@ -94,6 +96,7 @@ class WorkflowSupport:
         self.audit_log_repository = audit_log_repository
         self.subtitle_repository = subtitle_repository
         self.video_repository = video_repository
+        self.artifact_repository = artifact_repository
 
     def list_candidates_with_artist(self) -> list[tuple]:
         rows: list[tuple] = []
@@ -149,6 +152,43 @@ class WorkflowSupport:
         if self.subtitle_repository is None:
             raise RuntimeError("Subtitle repository is not configured")
         return self.subtitle_repository
+
+    def list_artifacts_for_candidate(self, candidate_id: str) -> list[dict]:
+        if self.artifact_repository is None:
+            return []
+        items = []
+        for artifact in self.artifact_repository.list_for_owner("candidate", candidate_id):
+            status = artifact.lifecycle_status
+            if artifact.expires_at is not None and artifact.expires_at <= utc_now() and status == "ready":
+                status = "expired"
+            items.append(
+                {
+                "artifact_id": artifact.artifact_id,
+                "artifact_type": artifact.artifact_type,
+                "object_uri": artifact.object_uri,
+                "content_type": artifact.content_type,
+                "size_bytes": artifact.size_bytes,
+                "checksum_sha256": artifact.checksum_sha256,
+                "lifecycle_status": status,
+                "version": artifact.version,
+                "created_at": artifact.created_at.isoformat(),
+                "expires_at": artifact.expires_at.isoformat() if artifact.expires_at else None,
+                }
+            )
+        return items
+
+    def get_candidate_artifact_status(self, candidate_id: str) -> str:
+        artifacts = self.list_artifacts_for_candidate(candidate_id)
+        if not artifacts:
+            return "missing"
+        statuses = {artifact["lifecycle_status"] for artifact in artifacts}
+        if "ready" in statuses:
+            return "ready"
+        if "expired" in statuses:
+            return "expired"
+        if "delete_failed" in statuses:
+            return "delete_failed"
+        return "deleted" if "deleted" in statuses else "missing"
 
     def ensure_video_for_candidate(self, candidate: VideoCandidate) -> Video:
         video_repository = self.get_video_repository_or_raise()
@@ -497,6 +537,8 @@ class LibraryService:
                     "approved_at": final_review.decided_at.isoformat() if final_review.decided_at else None,
                     "approved_by": final_review.decided_by,
                     "curation_status": candidate.status.value,
+                    "artifact_status": self.support.get_candidate_artifact_status(candidate.candidate_id),
+                    "artifacts": self.support.list_artifacts_for_candidate(candidate.candidate_id),
                 }
             )
         return items
@@ -723,6 +765,7 @@ def build_phase4_workflow_services(
     audit_log_repository: AuditLogRepository,
     subtitle_repository: SubtitleRepository | None = None,
     video_repository: VideoRepository | None = None,
+    artifact_repository: ArtifactRepository | None = None,
 ) -> Phase4WorkflowServices:
     artist_service = ArtistService(artist_repository)
     translation_service = TranslationService()
@@ -733,6 +776,7 @@ def build_phase4_workflow_services(
         audit_log_repository=audit_log_repository,
         subtitle_repository=subtitle_repository,
         video_repository=video_repository,
+        artifact_repository=artifact_repository,
     )
     return Phase4WorkflowServices(
         artist_service=artist_service,

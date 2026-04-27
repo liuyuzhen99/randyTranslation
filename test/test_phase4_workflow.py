@@ -277,7 +277,7 @@ class Phase4WorkflowTests(unittest.TestCase):
 
             inspector = inspect(create_engine(f"sqlite:///{db_path}", future=True))
             tables = set(inspector.get_table_names())
-            self.assertTrue({"review_items", "audit_log_entries"}.issubset(tables))
+            self.assertTrue({"review_items", "audit_log_entries", "artifacts"}.issubset(tables))
 
 
 if __name__ == "__main__":

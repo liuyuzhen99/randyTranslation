@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from domain.entities import (
+    ArtifactRecord,
     AuditLogEntry,
     Artist,
     ArtistSyncRun,
     Job,
     JobEvent,
     OutboxEvent,
+    PipelineStageExecution,
     ReviewItem,
     Subtitle,
     Video,
@@ -20,6 +23,7 @@ from domain.entities import (
 from domain.job_lifecycle import validate_job_transition
 from domain.time_utils import utc_now
 from domain.repositories import (
+    ArtifactRepository,
     AuditLogRepository,
     ArtistRepository,
     ArtistSyncRunRepository,
@@ -27,11 +31,13 @@ from domain.repositories import (
     JobEventRepository,
     JobRepository,
     OutboxRepository,
+    PipelineStageExecutionRepository,
     ReviewRepository,
     SubtitleRepository,
     VideoRepository,
 )
 from infrastructure.persistence.sqlalchemy_models import (
+    ArtifactModel,
     AuditLogEntryModel,
     ArtistModel,
     ArtistSyncRunModel,
@@ -39,6 +45,7 @@ from infrastructure.persistence.sqlalchemy_models import (
     JobEventModel,
     JobModel,
     OutboxModel,
+    PipelineStageExecutionModel,
     ReviewItemModel,
     SubtitleModel,
     VideoModel,
@@ -331,6 +338,122 @@ class SQLAlchemyJobEventRepository(JobEventRepository):
                 )
                 for row in rows
             ]
+
+
+class SQLAlchemyPipelineStageExecutionRepository(PipelineStageExecutionRepository):
+    def __init__(self, session_factory: SQLAlchemySessionFactory) -> None:
+        self.session_factory = session_factory
+
+    def upsert(self, execution: PipelineStageExecution) -> None:
+        with self.session_factory.session_scope() as session:
+            row = session.get(PipelineStageExecutionModel, execution.execution_id)
+            if row is None:
+                row = (
+                    session.execute(
+                        select(PipelineStageExecutionModel).where(
+                            PipelineStageExecutionModel.dedupe_key == execution.dedupe_key
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+
+            if row is None:
+                session.add(
+                    PipelineStageExecutionModel(
+                        execution_id=execution.execution_id,
+                        dedupe_key=execution.dedupe_key,
+                        job_id=execution.job_id,
+                        stage=execution.stage,
+                        candidate_id=execution.candidate_id,
+                        status=execution.status,
+                        attempt=execution.attempt,
+                        max_attempts=execution.max_attempts,
+                        next_retry_at=execution.next_retry_at,
+                        locked_at=execution.locked_at,
+                        completed_at=execution.completed_at,
+                        error_message=execution.error_message,
+                        result_payload=execution.result_payload,
+                        trace_id=execution.trace_id,
+                        created_at=execution.created_at,
+                        updated_at=execution.updated_at,
+                    )
+                )
+                return
+
+            row.job_id = execution.job_id
+            row.stage = execution.stage
+            row.candidate_id = execution.candidate_id
+            row.status = execution.status
+            row.attempt = execution.attempt
+            row.max_attempts = execution.max_attempts
+            row.next_retry_at = execution.next_retry_at
+            row.locked_at = execution.locked_at
+            row.completed_at = execution.completed_at
+            row.error_message = execution.error_message
+            row.result_payload = execution.result_payload
+            row.trace_id = execution.trace_id
+            row.updated_at = execution.updated_at
+
+    def get_by_dedupe_key(self, dedupe_key: str) -> PipelineStageExecution | None:
+        with self.session_factory.session_scope() as session:
+            row = (
+                session.execute(
+                    select(PipelineStageExecutionModel).where(
+                        PipelineStageExecutionModel.dedupe_key == dedupe_key
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            return self._to_entity(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> list[PipelineStageExecution]:
+        with self.session_factory.session_scope() as session:
+            rows = (
+                session.execute(
+                    select(PipelineStageExecutionModel)
+                    .where(PipelineStageExecutionModel.job_id == job_id)
+                    .order_by(PipelineStageExecutionModel.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [self._to_entity(row) for row in rows]
+
+    def list_for_candidate(self, candidate_id: str) -> list[PipelineStageExecution]:
+        with self.session_factory.session_scope() as session:
+            rows = (
+                session.execute(
+                    select(PipelineStageExecutionModel)
+                    .where(PipelineStageExecutionModel.candidate_id == candidate_id)
+                    .order_by(PipelineStageExecutionModel.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [self._to_entity(row) for row in rows]
+
+    @staticmethod
+    def _to_entity(row: PipelineStageExecutionModel) -> PipelineStageExecution:
+        return PipelineStageExecution(
+            execution_id=row.execution_id,
+            dedupe_key=row.dedupe_key,
+            job_id=row.job_id,
+            stage=row.stage,
+            candidate_id=row.candidate_id,
+            status=row.status,
+            attempt=row.attempt,
+            max_attempts=row.max_attempts,
+            next_retry_at=row.next_retry_at,
+            locked_at=row.locked_at,
+            completed_at=row.completed_at,
+            error_message=row.error_message,
+            result_payload=row.result_payload,
+            trace_id=row.trace_id,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
 
 
 class SQLAlchemyArtistSyncRunRepository(ArtistSyncRunRepository):
@@ -634,6 +757,133 @@ class SQLAlchemyAuditLogRepository(AuditLogRepository):
                 )
                 for row in rows
             ]
+
+
+class SQLAlchemyArtifactRepository(ArtifactRepository):
+    def __init__(self, session_factory: SQLAlchemySessionFactory) -> None:
+        self.session_factory = session_factory
+
+    def upsert(self, artifact: ArtifactRecord) -> None:
+        with self.session_factory.session_scope() as session:
+            row = session.get(ArtifactModel, artifact.artifact_id)
+            if row is None:
+                row = ArtifactModel(
+                    artifact_id=artifact.artifact_id,
+                    owner_type=artifact.owner_type,
+                    owner_id=artifact.owner_id,
+                    artifact_type=artifact.artifact_type,
+                    object_uri=artifact.object_uri,
+                    object_key=artifact.object_key,
+                    bucket=artifact.bucket,
+                    storage_provider=artifact.storage_provider,
+                    content_type=artifact.content_type,
+                    job_id=artifact.job_id,
+                    candidate_id=artifact.candidate_id,
+                    size_bytes=artifact.size_bytes,
+                    checksum_sha256=artifact.checksum_sha256,
+                    lifecycle_status=artifact.lifecycle_status,
+                    version=artifact.version,
+                    metadata_json=json.dumps(artifact.metadata, ensure_ascii=False, sort_keys=True),
+                    created_at=artifact.created_at,
+                    updated_at=artifact.updated_at,
+                    expires_at=artifact.expires_at,
+                )
+                session.add(row)
+                return
+
+            row.owner_type = artifact.owner_type
+            row.owner_id = artifact.owner_id
+            row.artifact_type = artifact.artifact_type
+            row.object_uri = artifact.object_uri
+            row.object_key = artifact.object_key
+            row.bucket = artifact.bucket
+            row.storage_provider = artifact.storage_provider
+            row.content_type = artifact.content_type
+            row.job_id = artifact.job_id
+            row.candidate_id = artifact.candidate_id
+            row.size_bytes = artifact.size_bytes
+            row.checksum_sha256 = artifact.checksum_sha256
+            row.lifecycle_status = artifact.lifecycle_status
+            row.version = artifact.version
+            row.metadata_json = json.dumps(artifact.metadata, ensure_ascii=False, sort_keys=True)
+            row.updated_at = artifact.updated_at
+            row.expires_at = artifact.expires_at
+
+    def get(self, artifact_id: str) -> ArtifactRecord | None:
+        with self.session_factory.session_scope() as session:
+            row = session.get(ArtifactModel, artifact_id)
+            return self._to_entity(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> list[ArtifactRecord]:
+        with self.session_factory.session_scope() as session:
+            rows = (
+                session.execute(
+                    select(ArtifactModel)
+                    .where(ArtifactModel.job_id == job_id)
+                    .order_by(ArtifactModel.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [self._to_entity(row) for row in rows]
+
+    def list_for_owner(self, owner_type: str, owner_id: str) -> list[ArtifactRecord]:
+        with self.session_factory.session_scope() as session:
+            rows = (
+                session.execute(
+                    select(ArtifactModel)
+                    .where(ArtifactModel.owner_type == owner_type, ArtifactModel.owner_id == owner_id)
+                    .order_by(ArtifactModel.artifact_type.asc(), ArtifactModel.version.desc())
+                )
+                .scalars()
+                .all()
+            )
+            return [self._to_entity(row) for row in rows]
+
+    def list_expired(self, now) -> list[ArtifactRecord]:
+        with self.session_factory.session_scope() as session:
+            rows = (
+                session.execute(
+                    select(ArtifactModel)
+                    .where(
+                        ArtifactModel.expires_at.is_not(None),
+                        ArtifactModel.expires_at <= now,
+                        ArtifactModel.lifecycle_status.in_(("ready", "expired")),
+                    )
+                    .order_by(ArtifactModel.expires_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [self._to_entity(row) for row in rows]
+
+    @staticmethod
+    def _to_entity(row: ArtifactModel) -> ArtifactRecord:
+        try:
+            metadata = json.loads(row.metadata_json or "{}")
+        except json.JSONDecodeError:
+            metadata = {"raw": row.metadata_json}
+        return ArtifactRecord(
+            artifact_id=row.artifact_id,
+            owner_type=row.owner_type,
+            owner_id=row.owner_id,
+            artifact_type=row.artifact_type,
+            object_uri=row.object_uri,
+            object_key=row.object_key,
+            bucket=row.bucket,
+            storage_provider=row.storage_provider,
+            content_type=row.content_type,
+            job_id=row.job_id,
+            candidate_id=row.candidate_id,
+            size_bytes=row.size_bytes,
+            checksum_sha256=row.checksum_sha256,
+            lifecycle_status=row.lifecycle_status,
+            version=row.version,
+            metadata=metadata,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            expires_at=row.expires_at,
+        )
 
 
 class SQLAlchemyOutboxRepository(OutboxRepository):

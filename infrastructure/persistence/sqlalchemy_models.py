@@ -227,6 +227,43 @@ class JobEventModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
 
 
+class PipelineStageExecutionModel(Base):
+    __tablename__ = "pipeline_stage_executions"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_pipeline_stage_executions_dedupe_key"),
+        Index("ix_pipeline_stage_executions_job_stage", "job_id", "stage"),
+        Index("ix_pipeline_stage_executions_candidate", "candidate_id", "created_at"),
+        Index("ix_pipeline_stage_executions_status_retry", "status", "next_retry_at"),
+        CheckConstraint("attempt >= 0", name="ck_pipeline_stage_executions_attempt_non_negative"),
+        CheckConstraint("max_attempts >= 1", name="ck_pipeline_stage_executions_max_attempts_positive"),
+    )
+
+    execution_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    job_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("jobs.job_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stage: Mapped[StageType] = mapped_column(stage_type_enum, nullable=False)
+    candidate_id: Mapped[str | None] = mapped_column(
+        String(128),
+        ForeignKey("video_candidates.candidate_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[StageStatus] = mapped_column(stage_status_enum, nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+
+
 class OutboxModel(Base):
     __tablename__ = "outbox"
     __table_args__ = (
@@ -317,3 +354,43 @@ class AuditLogEntryModel(Base):
     actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+
+
+class ArtifactModel(Base):
+    __tablename__ = "artifacts"
+    __table_args__ = (
+        UniqueConstraint("owner_type", "owner_id", "artifact_type", "version", name="uq_artifacts_owner_type_version"),
+        Index("ix_artifacts_job_id", "job_id"),
+        Index("ix_artifacts_owner", "owner_type", "owner_id"),
+        Index("ix_artifacts_object_uri", "object_uri"),
+        CheckConstraint("version >= 1", name="ck_artifacts_version_positive"),
+        CheckConstraint("size_bytes >= 0", name="ck_artifacts_size_non_negative"),
+    )
+
+    artifact_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    owner_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    artifact_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False)
+    bucket: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    job_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("jobs.job_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    candidate_id: Mapped[str | None] = mapped_column(
+        String(128),
+        ForeignKey("video_candidates.candidate_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    lifecycle_status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)

@@ -8,6 +8,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from application.services.outbox_dispatcher import OutboxDispatcher
+from application.services.async_pipeline import AsyncPipelineCommandService, PipelineStageWorker
+from application.services.pipeline_stage_handlers import PipelineStageHandlers
 from application.services.phase4_workflow_service import (
     Phase4WorkflowServices,
     build_phase4_workflow_services,
@@ -27,16 +29,21 @@ from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepos
 from infrastructure.persistence.sqlalchemy_repositories import (
     SQLAlchemyArtistRepository,
     SQLAlchemyArtistSyncRunRepository,
+    SQLAlchemyArtifactRepository,
     SQLAlchemyAuditLogRepository,
     SQLAlchemyCandidateRepository,
     SQLAlchemyJobRepository,
     SQLAlchemyOutboxRepository,
+    SQLAlchemyPipelineStageExecutionRepository,
     SQLAlchemyReviewRepository,
     SQLAlchemySessionFactory,
     SQLAlchemySubtitleRepository,
     SQLAlchemyVideoRepository,
 )
 from infrastructure.persistence.sqlite_repositories import SQLiteJobRepository
+from infrastructure.storage.cos_media_storage import TencentCOSMediaStorage
+from infrastructure.storage.local_media_storage import LocalFilesystemMediaStorage
+from infrastructure.messaging.rabbitmq_publisher import RabbitMQPublishConfig, RabbitMQPublisher
 
 # Current runtime requirements (Phase 0 fail-fast scope).
 REQUIRED_ENV_VARS: tuple[str, ...] = (
@@ -59,6 +66,10 @@ KNOWN_ENV_VARS: tuple[str, ...] = (
     "PHASE2_RECONCILE_MAX_INVALID_OUTBOX_PAYLOADS",
     "PHASE2_RECONCILE_MAX_OUTBOX_PAYLOAD_MISMATCHES",
     "PHASE2_OUTBOX_DISPATCH_ENABLED",
+    "PHASE6_ASYNC_PIPELINE_ENABLED",
+    "PHASE6_MAX_STAGE_ATTEMPTS",
+    "PHASE6_RETRY_BACKOFF_BASE_SECONDS",
+    "MEDIA_STORAGE_BACKEND",
     "MEDIA_TEMP_ROOT",
     "MEDIA_OUTPUT_ROOT",
     "SPOTIPY_CLIENT_ID",
@@ -82,6 +93,12 @@ KNOWN_ENV_VARS: tuple[str, ...] = (
     "S3_SECRET_ACCESS_KEY",
     "S3_BUCKET",
     "S3_REGION",
+    "COS_SECRET_ID",
+    "COS_SECRET_KEY",
+    "COS_BUCKET",
+    "COS_REGION",
+    "COS_SCHEME",
+    "COS_ENDPOINT",
 )
 
 
@@ -110,6 +127,12 @@ class AppRuntimeSettings:
     phase2_reconcile_max_invalid_outbox_payloads: int = 0
     phase2_reconcile_max_outbox_payload_mismatches: int = 0
     phase2_outbox_dispatch_enabled: bool = False
+    phase6_async_pipeline_enabled: bool = False
+    phase6_max_stage_attempts: int = 3
+    phase6_retry_backoff_base_seconds: int = 30
+    media_storage_backend: str = "local"
+    artifact_temp_retention_days: int = 1
+    artifact_final_retention_days: int = 0
 
 
 def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntimeSettings:
@@ -168,6 +191,25 @@ def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntim
         "yes",
         "on",
     }
+    phase6_async_pipeline_enabled = source.get("PHASE6_ASYNC_PIPELINE_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    phase6_max_stage_attempts = _read_non_negative_int(source, "PHASE6_MAX_STAGE_ATTEMPTS", default=3)
+    if phase6_max_stage_attempts < 1:
+        raise RuntimeError("PHASE6_MAX_STAGE_ATTEMPTS must be at least 1.")
+    phase6_retry_backoff_base_seconds = _read_non_negative_int(
+        source,
+        "PHASE6_RETRY_BACKOFF_BASE_SECONDS",
+        default=30,
+    )
+    media_storage_backend = source.get("MEDIA_STORAGE_BACKEND", "local").strip().lower() or "local"
+    if media_storage_backend not in {"local", "cos"}:
+        raise RuntimeError("Invalid MEDIA_STORAGE_BACKEND. Expected one of: local, cos.")
+    artifact_temp_retention_days = _read_non_negative_int(source, "ARTIFACT_TEMP_RETENTION_DAYS", default=1)
+    artifact_final_retention_days = _read_non_negative_int(source, "ARTIFACT_FINAL_RETENTION_DAYS")
     if not database_url:
         postgres_host = source.get("POSTGRES_HOST", "").strip()
         postgres_port = source.get("POSTGRES_PORT", "").strip() or "5432"
@@ -193,13 +235,42 @@ def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntim
         phase2_reconcile_max_invalid_outbox_payloads=reconcile_max_invalid_outbox_payloads,
         phase2_reconcile_max_outbox_payload_mismatches=reconcile_max_outbox_payload_mismatches,
         phase2_outbox_dispatch_enabled=outbox_dispatch_enabled,
+        phase6_async_pipeline_enabled=phase6_async_pipeline_enabled,
+        phase6_max_stage_attempts=phase6_max_stage_attempts,
+        phase6_retry_backoff_base_seconds=phase6_retry_backoff_base_seconds,
+        media_storage_backend=media_storage_backend,
+        artifact_temp_retention_days=artifact_temp_retention_days,
+        artifact_final_retention_days=artifact_final_retention_days,
     )
 
 
-def _read_non_negative_int(source: Mapping[str, str], key: str) -> int:
+def create_media_storage(
+    environ: Mapping[str, str] | None = None,
+    runtime_settings: AppRuntimeSettings | None = None,
+):
+    settings = runtime_settings or load_runtime_settings(environ)
+    source = environ if environ is not None else os.environ
+    if settings.media_storage_backend == "cos":
+        return TencentCOSMediaStorage(
+            temp_root=source.get("MEDIA_TEMP_ROOT", "").strip() or None,
+            bucket=source.get("COS_BUCKET", "").strip() or None,
+            region=source.get("COS_REGION", "").strip() or None,
+            secret_id=source.get("COS_SECRET_ID", "").strip() or None,
+            secret_key=source.get("COS_SECRET_KEY", "").strip() or None,
+            scheme=source.get("COS_SCHEME", "https").strip() or "https",
+            endpoint=source.get("COS_ENDPOINT", "").strip() or None,
+        )
+    return LocalFilesystemMediaStorage(
+        temp_root=source.get("MEDIA_TEMP_ROOT", "").strip() or None,
+        output_root=source.get("MEDIA_OUTPUT_ROOT", "").strip() or None,
+        bucket=source.get("S3_BUCKET", "").strip() or source.get("COS_BUCKET", "").strip() or None,
+    )
+
+
+def _read_non_negative_int(source: Mapping[str, str], key: str, default: int = 0) -> int:
     raw_value = source.get(key, "").strip()
     if not raw_value:
-        return 0
+        return default
     try:
         value = int(raw_value)
     except ValueError as exc:
@@ -291,16 +362,62 @@ def create_phase2_outbox_dispatcher(
     session_factory: SQLAlchemySessionFactory | None = None,
 ) -> OutboxDispatcher | None:
     settings = runtime_settings or load_runtime_settings(environ)
-    if not settings.phase2_outbox_dispatch_enabled:
+    if not settings.phase2_outbox_dispatch_enabled and not settings.phase6_async_pipeline_enabled:
         return None
     if publisher is None:
-        return None
+        if settings.phase6_async_pipeline_enabled:
+            rabbitmq_url = (environ if environ is not None else os.environ).get("RABBITMQ_URL", "").strip()
+            if rabbitmq_url:
+                publisher = RabbitMQPublisher(RabbitMQPublishConfig(url=rabbitmq_url))
+        if publisher is None:
+            return None
     active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
     if active_session_factory is None:
         raise RuntimeError(
             "PHASE2_OUTBOX_DISPATCH_ENABLED requires DATABASE_URL to be configured."
         )
     return OutboxDispatcher(SQLAlchemyOutboxRepository(active_session_factory), publisher)
+
+
+def create_phase6_async_pipeline_services(
+    environ: Mapping[str, str] | None = None,
+    runtime_settings: AppRuntimeSettings | None = None,
+    session_factory: SQLAlchemySessionFactory | None = None,
+    job_repository: JobRepository | None = None,
+    media_storage=None,
+    producer_backend_factory=None,
+    workflow_services: Phase4WorkflowServices | None = None,
+    artifact_repository=None,
+) -> tuple[AsyncPipelineCommandService, PipelineStageWorker] | None:
+    settings = runtime_settings or load_runtime_settings(environ)
+    if not settings.phase6_async_pipeline_enabled:
+        return None
+    active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
+    if active_session_factory is None:
+        raise RuntimeError("PHASE6_ASYNC_PIPELINE_ENABLED requires DATABASE_URL to be configured.")
+    active_job_repository = job_repository or SQLAlchemyJobRepository(active_session_factory)
+    outbox_repository = SQLAlchemyOutboxRepository(active_session_factory)
+    command_service = AsyncPipelineCommandService(
+        outbox_repository=outbox_repository,
+        max_attempts=settings.phase6_max_stage_attempts,
+    )
+    handlers = None
+    if media_storage is not None and producer_backend_factory is not None:
+        handlers = PipelineStageHandlers(
+            media_storage=media_storage,
+            producer_backend_factory=producer_backend_factory,
+            workflow_services=workflow_services,
+            artifact_repository=artifact_repository,
+            final_artifact_retention_days=settings.artifact_final_retention_days,
+        ).as_mapping()
+    worker = PipelineStageWorker(
+        job_repository=active_job_repository,
+        execution_repository=SQLAlchemyPipelineStageExecutionRepository(active_session_factory),
+        command_service=command_service,
+        handlers=handlers,
+        backoff_base_seconds=settings.phase6_retry_backoff_base_seconds,
+    )
+    return command_service, worker
 
 
 def create_phase3_catalog_service(
@@ -342,7 +459,20 @@ def create_phase4_workflow_services(
         audit_log_repository=SQLAlchemyAuditLogRepository(active_session_factory),
         subtitle_repository=SQLAlchemySubtitleRepository(active_session_factory),
         video_repository=SQLAlchemyVideoRepository(active_session_factory),
+        artifact_repository=SQLAlchemyArtifactRepository(active_session_factory),
     )
+
+
+def create_artifact_repository(
+    environ: Mapping[str, str] | None = None,
+    runtime_settings: AppRuntimeSettings | None = None,
+    session_factory: SQLAlchemySessionFactory | None = None,
+) -> SQLAlchemyArtifactRepository | None:
+    settings = runtime_settings or load_runtime_settings(environ)
+    active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
+    if active_session_factory is None:
+        return None
+    return SQLAlchemyArtifactRepository(active_session_factory)
 
 
 def _default_followed_artists_lookup_provider():
