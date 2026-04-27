@@ -50,6 +50,9 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         self.assertEqual(settings.phase2_reconcile_max_invalid_outbox_payloads, 0)
         self.assertEqual(settings.phase2_reconcile_max_outbox_payload_mismatches, 0)
         self.assertFalse(settings.phase2_outbox_dispatch_enabled)
+        self.assertFalse(settings.phase6_async_pipeline_enabled)
+        self.assertEqual(settings.phase6_max_stage_attempts, 3)
+        self.assertEqual(settings.phase6_retry_backoff_base_seconds, 30)
 
     def test_load_runtime_settings_reads_reconcile_report_path(self):
         settings = load_runtime_settings(
@@ -208,6 +211,20 @@ class Phase0ConfigValidationTests(unittest.TestCase):
             publisher=Publisher(),
             environ={
                 "PHASE2_OUTBOX_DISPATCH_ENABLED": "true",
+                "DATABASE_URL": "sqlite:///:memory:",
+            },
+        )
+        self.assertIsInstance(dispatcher, OutboxDispatcher)
+
+    def test_create_phase2_outbox_dispatcher_builds_for_phase6_without_phase2_flag(self):
+        class Publisher:
+            def publish(self, topic: str, payload: str, correlation_id=None) -> None:
+                return None
+
+        dispatcher = create_phase2_outbox_dispatcher(
+            publisher=Publisher(),
+            environ={
+                "PHASE6_ASYNC_PIPELINE_ENABLED": "true",
                 "DATABASE_URL": "sqlite:///:memory:",
             },
         )

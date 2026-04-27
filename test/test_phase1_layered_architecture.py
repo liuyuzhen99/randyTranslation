@@ -5,9 +5,16 @@ import unittest
 
 from application.services.job_service import JobService
 from application.services.pipeline_orchestrator import PipelineOrchestrator
-from domain.entities import Job
-from domain.enums import JobStatus
+from domain.entities import Artist, Job, VideoCandidate
+from domain.enums import CandidateStatus, JobStatus, SyncStatus
 from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
+from infrastructure.persistence.sqlalchemy_repositories import (
+    SQLAlchemyArtistRepository,
+    SQLAlchemyArtifactRepository,
+    SQLAlchemyCandidateRepository,
+    SQLAlchemyJobRepository,
+    SQLAlchemySessionFactory,
+)
 from infrastructure.persistence.sqlite_repositories import SQLiteJobRepository
 from infrastructure.pipeline.legacy_producer_adapter import MissingProducerBackend
 from infrastructure.storage.local_media_storage import LocalFilesystemMediaStorage
@@ -106,7 +113,34 @@ class Phase1LayeredArchitectureTests(unittest.TestCase):
 
             self.assertTrue(os.path.isdir(workspace))
             self.assertEqual(temp_file, os.path.join(workspace, "raw_video.mp4"))
-            self.assertEqual(final_output, os.path.join(output_root, "MV_job12345.mp4"))
+            self.assertEqual(final_output, os.path.join(workspace, "final_video.mp4"))
+
+            with open(final_output, "w", encoding="utf-8") as file_obj:
+                file_obj.write("final")
+            artifact = storage.upload_artifact(
+                "job12345",
+                final_output,
+                artifact_type="final_video",
+                content_type="video/mp4",
+            )
+            self.assertEqual(
+                artifact.object_uri,
+                "oss://randy-translation/pipeline/job12345/final_video/v1/final_video.mp4",
+            )
+            self.assertTrue(
+                os.path.exists(
+                    os.path.join(
+                        output_root,
+                        "randy-translation",
+                        "pipeline",
+                        "job12345",
+                        "final_video",
+                        "v1",
+                        "final_video.mp4",
+                    )
+                )
+            )
+            self.assertIn("/v1/artifacts/download?uri=", storage.create_presigned_url(artifact.object_uri))
 
             storage.cleanup_task_workspace("job12345")
             self.assertFalse(os.path.exists(workspace))
@@ -143,8 +177,97 @@ class Phase1LayeredArchitectureTests(unittest.TestCase):
             assert updated is not None
             self.assertEqual(updated.status, JobStatus.COMPLETED)
             self.assertTrue(updated.result)
-            self.assertTrue(os.path.exists(updated.result))
+            self.assertTrue(updated.result.startswith("oss://randy-translation/"))
+            self.assertTrue(
+                os.path.exists(
+                    os.path.join(
+                        output_root,
+                        "randy-translation",
+                        "pipeline",
+                        "abc12345",
+                        "final_video",
+                        "v1",
+                        "final_video.mp4",
+                    )
+                )
+            )
             self.assertFalse(os.path.exists(os.path.join(temp_root, job.job_id)))
+
+    def test_pipeline_orchestrator_records_artifact_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_root, tempfile.TemporaryDirectory() as output_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'artifacts.db')}")
+            session_factory.create_schema()
+            repo = SQLAlchemyJobRepository(session_factory)
+            artifact_repo = SQLAlchemyArtifactRepository(session_factory)
+            job = Job(job_id="meta0001", song_name="song")
+            repo.create(job)
+            storage = LocalFilesystemMediaStorage(temp_root=temp_root, output_root=output_root)
+            orchestrator = PipelineOrchestrator(
+                repo,
+                storage,
+                FakeProducerBackend,
+                artifact_repository=artifact_repo,
+            )
+
+            orchestrator.run(job.job_id, job.song_name)
+
+            artifacts = artifact_repo.list_for_job(job.job_id)
+            self.assertEqual(
+                {artifact.artifact_type for artifact in artifacts},
+                {"final_video", "subtitle_srt"},
+            )
+            final_video = next(artifact for artifact in artifacts if artifact.artifact_type == "final_video")
+            self.assertEqual(final_video.owner_type, "job")
+            self.assertEqual(final_video.object_uri, repo.get(job.job_id).result)
+            self.assertGreater(final_video.size_bytes, 0)
+            self.assertEqual(final_video.lifecycle_status, "ready")
+
+    def test_pipeline_orchestrator_links_artifacts_to_candidate(self):
+        with tempfile.TemporaryDirectory() as temp_root, tempfile.TemporaryDirectory() as output_root:
+            session_factory = SQLAlchemySessionFactory(
+                f"sqlite:///{os.path.join(temp_root, 'candidate-artifacts.db')}"
+            )
+            session_factory.create_schema()
+            artist_repo = SQLAlchemyArtistRepository(session_factory)
+            candidate_repo = SQLAlchemyCandidateRepository(session_factory)
+            job_repo = SQLAlchemyJobRepository(session_factory)
+            artifact_repo = SQLAlchemyArtifactRepository(session_factory)
+            artist_repo.upsert(Artist(spotify_id="artist-cos-1", name="COS Artist"))
+            candidate = VideoCandidate(
+                candidate_id="artist-cos-1:video-cos-1",
+                spotify_id="artist-cos-1",
+                video_id="video-cos-1",
+                channel_id="UC_COS",
+                title="COS Candidate Video",
+                source_url="https://youtube.test/watch?v=video-cos-1",
+                status=CandidateStatus.ACCEPTED,
+                ingestion_status=SyncStatus.COMPLETED,
+            )
+            candidate_repo.upsert(candidate)
+            job = Job(job_id="cand0001", song_name=candidate.title)
+            job_repo.create(job)
+            storage = LocalFilesystemMediaStorage(temp_root=temp_root, output_root=output_root)
+            orchestrator = PipelineOrchestrator(
+                job_repo,
+                storage,
+                FakeProducerBackend,
+                artifact_repository=artifact_repo,
+            )
+
+            orchestrator.run(job.job_id, job.song_name, candidate_id=candidate.candidate_id)
+
+            job_artifacts = artifact_repo.list_for_job(job.job_id)
+            candidate_artifacts = artifact_repo.list_for_owner("candidate", candidate.candidate_id)
+            self.assertEqual(len(job_artifacts), 2)
+            self.assertEqual(len(candidate_artifacts), 2)
+            self.assertEqual({artifact.artifact_id for artifact in job_artifacts}, {artifact.artifact_id for artifact in candidate_artifacts})
+            final_video = next(
+                artifact for artifact in candidate_artifacts if artifact.artifact_type == "final_video"
+            )
+            self.assertEqual(final_video.owner_type, "candidate")
+            self.assertEqual(final_video.owner_id, candidate.candidate_id)
+            self.assertEqual(final_video.candidate_id, candidate.candidate_id)
+            self.assertEqual(final_video.job_id, job.job_id)
 
     def test_pipeline_orchestrator_failure(self):
         with tempfile.TemporaryDirectory() as temp_root, tempfile.TemporaryDirectory() as output_root:
@@ -179,7 +302,7 @@ class Phase1LayeredArchitectureTests(unittest.TestCase):
             self.assertEqual(updated.status, JobStatus.COMPLETED)
             self.assertIn("清理临时文件失败", updated.progress)
             self.assertTrue(updated.result)
-            self.assertTrue(os.path.exists(updated.result))
+            self.assertTrue(updated.result.startswith("oss://randy-translation/"))
 
     def test_pipeline_orchestrator_uses_isolated_backend_instances_per_job(self):
         with tempfile.TemporaryDirectory() as temp_root, tempfile.TemporaryDirectory() as output_root:

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
-from domain.entities import Job
+from domain.entities import ArtifactRecord, Job
 from domain.enums import JobStatus, StageType
 from domain.job_lifecycle import transition_job
-from domain.repositories import JobRepository
+from domain.repositories import ArtifactRepository, JobRepository
 from domain.storage import MediaStorageService
+from domain.time_utils import utc_now
 from infrastructure.pipeline.legacy_producer_adapter import ProducerBackendFactory
 
 logger = logging.getLogger(__name__)
@@ -21,13 +23,17 @@ class PipelineOrchestrator:
         media_storage: MediaStorageService,
         producer_backend_factory: ProducerBackendFactory,
         shadow_write_service=None,
+        artifact_repository: ArtifactRepository | None = None,
+        final_artifact_retention_days: int = 0,
     ) -> None:
         self.job_repository = job_repository
         self.media_storage = media_storage
         self.producer_backend_factory = producer_backend_factory
         self.shadow_write_service = shadow_write_service
+        self.artifact_repository = artifact_repository
+        self.final_artifact_retention_days = final_artifact_retention_days
 
-    def run(self, task_id: str, song_name: str) -> None:
+    def run(self, task_id: str, song_name: str, candidate_id: str | None = None) -> None:
         job = self.job_repository.get(task_id)
         if not job:
             job = Job(job_id=task_id, song_name=song_name)
@@ -76,12 +82,26 @@ class PipelineOrchestrator:
             )
             final_output = self.media_storage.resolve_final_output(task_id)
             producer_backend.burn_video(video_ref, subtitle_file, final_path=final_output)
+            final_video_artifact = self.media_storage.upload_artifact(
+                task_id=task_id,
+                local_path=final_output,
+                artifact_type="final_video",
+                content_type="video/mp4",
+            )
+            subtitle_artifact = self.media_storage.upload_artifact(
+                task_id=task_id,
+                local_path=subtitle_file,
+                artifact_type="subtitle_srt",
+                content_type="application/x-subrip",
+            )
+            self._record_artifact(job, final_video_artifact, candidate_id=candidate_id)
+            self._record_artifact(job, subtitle_artifact, candidate_id=candidate_id)
 
             job = self._update_job(
                 job,
                 JobStatus.COMPLETED,
                 "✨ 制作完成！",
-                final_output,
+                final_video_artifact.object_uri,
                 stage=StageType.RENDER,
             )
         except Exception as exc:
@@ -116,3 +136,37 @@ class PipelineOrchestrator:
             except Exception:
                 logger.exception("Phase 2 shadow-write failed during job update for %s", job.job_id)
         return updated_job
+
+    def _record_artifact(self, job: Job, stored_object, candidate_id: str | None = None) -> None:
+        if self.artifact_repository is None:
+            return
+        now = utc_now()
+        expires_at = (
+            now + timedelta(days=self.final_artifact_retention_days)
+            if self.final_artifact_retention_days > 0
+            else None
+        )
+        owner_type = "candidate" if candidate_id else "job"
+        owner_id = candidate_id or job.job_id
+        self.artifact_repository.upsert(
+            ArtifactRecord(
+                artifact_id=f"{owner_type}:{owner_id}:{stored_object.artifact_type}:v1",
+                owner_type=owner_type,
+                owner_id=owner_id,
+                artifact_type=stored_object.artifact_type,
+                object_uri=stored_object.object_uri,
+                object_key=stored_object.object_key,
+                bucket=stored_object.bucket,
+                storage_provider=stored_object.storage_provider,
+                content_type=stored_object.content_type,
+                job_id=job.job_id,
+                candidate_id=candidate_id,
+                size_bytes=stored_object.size_bytes,
+                checksum_sha256=stored_object.checksum_sha256,
+                version=1,
+                metadata={"song_name": job.song_name},
+                created_at=stored_object.created_at,
+                updated_at=now,
+                expires_at=expires_at,
+            )
+        )

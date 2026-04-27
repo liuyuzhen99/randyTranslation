@@ -125,6 +125,29 @@ class AuditLogEntry:
 
 
 @dataclass
+class ArtifactRecord:
+    artifact_id: str
+    owner_type: str
+    owner_id: str
+    artifact_type: str
+    object_uri: str
+    object_key: str
+    bucket: str
+    storage_provider: str
+    content_type: Optional[str] = None
+    job_id: Optional[str] = None
+    candidate_id: Optional[str] = None
+    size_bytes: int = 0
+    checksum_sha256: str = ""
+    lifecycle_status: str = "ready"
+    version: int = 1
+    metadata: dict = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    expires_at: Optional[datetime] = None
+
+
+@dataclass
 class JobEvent:
     event_id: str
     job_id: str
@@ -134,6 +157,26 @@ class JobEvent:
     message: str = ""
     retry_count: int = 0
     created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass
+class PipelineStageExecution:
+    execution_id: str
+    dedupe_key: str
+    job_id: str
+    stage: StageType
+    candidate_id: Optional[str] = None
+    status: StageStatus = StageStatus.PENDING
+    attempt: int = 0
+    max_attempts: int = 3
+    next_retry_at: Optional[datetime] = None
+    locked_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    result_payload: Optional[str] = None
+    trace_id: Optional[str] = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass

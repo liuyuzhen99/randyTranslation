@@ -12,7 +12,9 @@ class StageType(str, Enum):
     DOWNLOAD = "download"
     TRANSCRIBE = "transcribe"
     AUDIT = "audit"
+    MANUAL_REVIEW = "manual_review"
     TRANSLATE = "translate"
+    TRANSLATION_REVIEW = "translation_review"
     RENDER = "render"
 
 
@@ -21,6 +23,8 @@ class StageStatus(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    RETRY_SCHEDULED = "retry_scheduled"
+    DLQ = "dlq"
 
 
 class OutboxStatus(str, Enum):
