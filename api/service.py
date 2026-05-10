@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 import os
 from pathlib import Path
@@ -264,6 +264,25 @@ class ErrorEnvelope(BaseModel):
     meta: ResponseMeta
 
 
+@dataclass
+class RuntimeServices:
+    job_repository: object
+    job_service: object
+    media_storage: object
+    artifact_repository: object
+    orchestrator: object
+    shadow_write_service: object
+    reconcile_service: object
+    outbox_dispatcher: object
+    vector_repository: object
+    phase3_catalog_service: object
+    phase4_workflow_services: object
+    artifact_lifecycle_service: object
+    phase6_async_pipeline_services: object
+    session_factory: object
+    runtime_settings: object
+
+
 def build_runtime_services(outbox_publisher=None, phase3_providers=None):
     runtime_settings = load_runtime_settings()
     session_factory = create_sqlalchemy_session_factory(runtime_settings=runtime_settings)
@@ -331,22 +350,22 @@ def build_runtime_services(outbox_publisher=None, phase3_providers=None):
         artifact_repository=artifact_repository,
         vector_repository=vector_repository,
     )
-    return (
-        job_repository,
-        job_service,
-        media_storage,
-        artifact_repository,
-        orchestrator,
-        shadow_write_service,
-        reconcile_service,
-        outbox_dispatcher,
-        vector_repository,
-        phase3_catalog_service,
-        phase4_workflow_services,
-        artifact_lifecycle_service,
-        phase6_async_pipeline_services,
-        session_factory,
-        runtime_settings,
+    return RuntimeServices(
+        job_repository=job_repository,
+        job_service=job_service,
+        media_storage=media_storage,
+        artifact_repository=artifact_repository,
+        orchestrator=orchestrator,
+        shadow_write_service=shadow_write_service,
+        reconcile_service=reconcile_service,
+        outbox_dispatcher=outbox_dispatcher,
+        vector_repository=vector_repository,
+        phase3_catalog_service=phase3_catalog_service,
+        phase4_workflow_services=phase4_workflow_services,
+        artifact_lifecycle_service=artifact_lifecycle_service,
+        phase6_async_pipeline_services=phase6_async_pipeline_services,
+        session_factory=session_factory,
+        runtime_settings=runtime_settings,
     )
 
 
@@ -383,42 +402,26 @@ async def app_lifespan(app_instance: FastAPI):
 
 def create_app(outbox_publisher=None, phase3_providers=None) -> FastAPI:
     app_instance = FastAPI(title="Hip-hop MV 自动化工坊 API", lifespan=app_lifespan)
-    (
-        job_repository,
-        job_service,
-        media_storage,
-        artifact_repository,
-        orchestrator,
-        shadow_write_service,
-        reconcile_service,
-        outbox_dispatcher,
-        vector_repository,
-        phase3_catalog_service,
-        phase4_workflow_services,
-        artifact_lifecycle_service,
-        phase6_async_pipeline_services,
-        session_factory,
-        runtime_settings,
-    ) = build_runtime_services(
+    svc = build_runtime_services(
         outbox_publisher=outbox_publisher,
         phase3_providers=phase3_providers,
     )
 
-    app_instance.state.job_repository = job_repository
-    app_instance.state.job_service = job_service
-    app_instance.state.media_storage = media_storage
-    app_instance.state.artifact_repository = artifact_repository
-    app_instance.state.orchestrator = orchestrator
-    app_instance.state.shadow_write_service = shadow_write_service
-    app_instance.state.reconcile_service = reconcile_service
-    app_instance.state.outbox_dispatcher = outbox_dispatcher
-    app_instance.state.vector_repository = vector_repository
-    app_instance.state.phase3_catalog_service = phase3_catalog_service
-    app_instance.state.phase4_workflow_services = phase4_workflow_services
-    app_instance.state.artifact_lifecycle_service = artifact_lifecycle_service
-    app_instance.state.phase6_async_pipeline_services = phase6_async_pipeline_services
-    app_instance.state.session_factory = session_factory
-    app_instance.state.runtime_settings = runtime_settings
+    app_instance.state.job_repository = svc.job_repository
+    app_instance.state.job_service = svc.job_service
+    app_instance.state.media_storage = svc.media_storage
+    app_instance.state.artifact_repository = svc.artifact_repository
+    app_instance.state.orchestrator = svc.orchestrator
+    app_instance.state.shadow_write_service = svc.shadow_write_service
+    app_instance.state.reconcile_service = svc.reconcile_service
+    app_instance.state.outbox_dispatcher = svc.outbox_dispatcher
+    app_instance.state.vector_repository = svc.vector_repository
+    app_instance.state.phase3_catalog_service = svc.phase3_catalog_service
+    app_instance.state.phase4_workflow_services = svc.phase4_workflow_services
+    app_instance.state.artifact_lifecycle_service = svc.artifact_lifecycle_service
+    app_instance.state.phase6_async_pipeline_services = svc.phase6_async_pipeline_services
+    app_instance.state.session_factory = svc.session_factory
+    app_instance.state.runtime_settings = svc.runtime_settings
     app_instance.state.phase6_service_worker = None
 
     def build_response_meta(
