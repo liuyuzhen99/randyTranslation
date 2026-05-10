@@ -21,7 +21,10 @@ class EmbeddingProvider(Protocol):
 
 
 class HashingEmbeddingProvider:
-    """Deterministic local embedding for repeatable migration/parity tests."""
+    """Deterministic local embedding for repeatable migration/parity tests.
+
+    NOT suitable for production semantic retrieval — use OpenAIEmbeddingProvider instead.
+    """
 
     def __init__(self, dimension: int = 384) -> None:
         if dimension < 8:
@@ -179,6 +182,26 @@ def deterministic_vector_id(namespace: str, source_id: str) -> str:
     digest = hashlib.sha256(f"{namespace}:{source_id}".encode("utf-8")).hexdigest()
     raw = digest[:32]
     return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:32]}"
+
+
+class OpenAIEmbeddingProvider:
+    """Production semantic embedding using OpenAI text-embedding-3-small (1536-dim)."""
+
+    MODEL = "text-embedding-3-small"
+    dimension = 1536
+
+    def __init__(self, api_key: str, model: str = MODEL) -> None:
+        import openai  # deferred to avoid import cost when using HashingEmbeddingProvider
+        self._client = openai.OpenAI(api_key=api_key)
+        self._model = model
+        self.dimension = 1536
+
+    def embed(self, text: str) -> list[float]:
+        response = self._client.embeddings.create(
+            model=self._model,
+            input=text.strip() or "empty",
+        )
+        return response.data[0].embedding
 
 
 def _tokenize(text: str) -> list[str]:

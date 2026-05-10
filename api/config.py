@@ -95,6 +95,7 @@ KNOWN_ENV_VARS: tuple[str, ...] = (
     "VECTOR_REPOSITORY_BACKEND",
     "VECTOR_EMBEDDING_DIMENSION",
     "QDRANT_COLLECTION_PREFIX",
+    "OPENAI_API_KEY",
     "PHASE9_CUTOVER_READ_SOURCE",
     "PHASE9_SCHEMA_FREEZE_ENABLED",
     "PHASE9_ROLLBACK_ENABLED",
@@ -313,11 +314,22 @@ def create_vector_repository(
     settings = runtime_settings or load_runtime_settings(environ)
     source = environ if environ is not None else os.environ
     if settings.vector_repository_backend == "qdrant":
+        openai_api_key = source.get("OPENAI_API_KEY", "").strip()
+        if openai_api_key:
+            from application.services.phase8_vectors import OpenAIEmbeddingProvider
+            embedding_provider = OpenAIEmbeddingProvider(api_key=openai_api_key)
+        else:
+            import logging
+            logging.getLogger(__name__).warning(
+                "OPENAI_API_KEY not set — falling back to HashingEmbeddingProvider. "
+                "RAG semantic retrieval will not work correctly in production."
+            )
+            embedding_provider = HashingEmbeddingProvider(settings.vector_embedding_dimension)
         return QdrantVectorRepository(
             url=source.get("QDRANT_URL", "").strip(),
             api_key=source.get("QDRANT_API_KEY", "").strip(),
             collection_prefix=settings.qdrant_collection_prefix,
-            embedding_provider=HashingEmbeddingProvider(settings.vector_embedding_dimension),
+            embedding_provider=embedding_provider,
         )
     sqlite_path = source.get("JOB_REPOSITORY_SQLITE_PATH", "").strip() or str(Path.cwd() / "data" / "jobs.db")
     from infrastructure.persistence.sqlite_repositories import SQLiteVectorRepository
