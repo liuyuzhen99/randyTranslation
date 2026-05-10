@@ -460,3 +460,102 @@ Week 4: 任务7(shadow_write 告警) + 任务8(EXPLAIN 先行再补索引) + 任
 | [application/services/phase9_cutover.py:60](../application/services/phase9_cutover.py) | 只做 key set 对比，frozen dataclass 加 dict 字段会报错 | 任务5 |
 | [api/config.py:160](../api/config.py) | 手动解析 120 行环境变量 | 任务10 |
 | [domain/exceptions.py](../domain/exceptions.py) | 需扩展业务异常层级 | 任务11 |
+
+---
+
+## 实施进展记录（2026-05-10）
+
+### 分支：`feature/project-upgrade-p0-p1`
+
+基于计划执行后的实际改动记录，含所有与原计划的偏差说明。
+
+---
+
+#### commit 1 — `9583570` `docs: add project upgrade plan 20260510`
+
+生成本文件，包含所有 review 修正（索引目标描述有误、`phase7_metrics` 框架不存在、`session.bind` 废弃、Qdrant 维度迁移破坏性、`frozen=True` + dict 字段兼容性）。
+
+**状态**：完成
+
+---
+
+#### commit 2 — `d101d30` `fix(P0): outbox concurrent safety + atomic upsert-enqueue transaction`
+
+**任务 1（并发安全）实际改动**：
+
+- [infrastructure/persistence/sqlalchemy_repositories.py](../infrastructure/persistence/sqlalchemy_repositories.py)
+  - `SQLAlchemyOutboxRepository.__init__` 新增 `self._is_postgres = session_factory.engine.dialect.name == "postgresql"`（通过 `engine` 访问，非废弃的 `session.bind`）
+  - `list_pending()` 改为：先构造 `stmt`，若 `_is_postgres` 则 `.with_for_update(skip_locked=True)`，同时加 `.order_by(event_id.asc()).limit(50)` 使行为更确定
+
+**任务 2（事务边界）实际改动**：
+
+- [infrastructure/persistence/sqlalchemy_repositories.py](../infrastructure/persistence/sqlalchemy_repositories.py)
+  - `SQLAlchemySessionFactory` 新增 `transactional()` context manager（与 `session_scope()` 语义相同，但用途语义更清晰，供跨 repository 共享调用）
+  - `SQLAlchemyPipelineStageExecutionRepository` 新增 `upsert_with_session(session, execution)` 和私有 `_upsert_with_session(session, execution)`，原 `upsert()` 委托给私有方法
+  - `SQLAlchemyOutboxRepository` 新增 `add_with_session(session, event)` 和私有 `_add_with_session(session, event)`，原 `add()` 委托给私有方法
+
+- [application/services/async_pipeline.py](../application/services/async_pipeline.py)
+  - `PipelineStageWorker.__init__` 新增可选参数 `session_factory: SQLAlchemySessionFactory | None = None`
+  - 新增私有方法 `_atomic_upsert_and_enqueue(execution, enqueue_fn)`：当 `session_factory` 非 None 且两个 repository 均为 SQLAlchemy 实现时，在同一 `transactional()` session 内完成 execution upsert + outbox add；否则 fallback 到分离调用（兼容内存 repository 的测试场景）
+  - `handle()` 中成功路径和 DLQ 路径均改用 `_atomic_upsert_and_enqueue`
+
+- [api/config.py](../api/config.py)
+  - `PipelineStageWorker(...)` 构造调用新增 `session_factory=active_session_factory`
+
+**与原计划的偏差**：`_atomic_upsert_and_enqueue` 通过临时替换 `outbox_repository.add` 的方式共享 session，避免了修改 `OutboxRepository` 抽象接口。这比计划里"给 `PipelineStageWorker.handle()` 传入共享 session 参数"的方案侵入性更小，接口更稳定。
+
+**测试结果**：18 个 phase6 async pipeline 测试全部通过。
+
+**状态**：完成
+
+---
+
+#### commit 3 — `c48e6a0` `feat(P0): add OpenAIEmbeddingProvider, replace HashingEmbeddingProvider in prod`
+
+**任务 3（RAG Embedding）实际改动**：
+
+- [application/services/phase8_vectors.py](../application/services/phase8_vectors.py)
+  - 新增 `OpenAIEmbeddingProvider`（`text-embedding-3-small`，1536 维），`import openai` 延迟到 `__init__` 内避免不必要的导入开销
+  - `HashingEmbeddingProvider` 文档注释标注为 test-only
+
+- [api/config.py](../api/config.py)
+  - `create_vector_repository()` 读取 `OPENAI_API_KEY`：有则使用 `OpenAIEmbeddingProvider`，无则 `logger.warning` + fallback 到 `HashingEmbeddingProvider`
+  - `OPENAI_API_KEY` 加入 `KNOWN_ENV_VARS`
+
+- [.env.example](../.env.example)
+  - 新增 `OPENAI_API_KEY=`（触发了 `test_phase0_env_template_contract` 合约测试，确保模板覆盖所有已知变量）
+
+**待完成（需独立操作窗口）**：Qdrant collection 从 384 维重建为 1536 维。参考任务 3 中的四步迁移 runbook，当前代码侧已就绪，维度切换是运维操作。
+
+**测试结果**：7 个 phase8 测试全部通过，`KNOWN_ENV_VARS` 合约测试通过。
+
+**状态**：代码完成，Qdrant 维度迁移待执行
+
+---
+
+#### commit 4 — `75bf7a7` `refactor(P1): build_runtime_services() returns RuntimeServices dataclass`
+
+**任务 4-Step A（RuntimeServices dataclass）实际改动**：
+
+- [api/service.py](../api/service.py)
+  - 新增 `@dataclass class RuntimeServices`，15 个具名字段对应原 tuple 每个位置
+  - `build_runtime_services()` 返回值从 15 元素 tuple 改为 `RuntimeServices(...)`
+  - `create_app()` 改为 `svc = build_runtime_services(...)`，所有 `app_instance.state.xxx = ...` 改为 `svc.xxx` 属性访问，消除位置解包
+
+**状态**：完成
+
+---
+
+### 待续任务
+
+| 任务 | 状态 | 预计工作量 |
+|------|------|-----------|
+| 任务 4-Step B：api/service.py 按资源拆分 router | 未开始 | 2 天 |
+| 任务 5：Phase 9 字段级一致性校验 | 未开始 | 半天 |
+| 任务 6：Pipeline 端到端集成测试 | 未开始 | 1 天 |
+| 任务 7：shadow_write 失败可观测性 | 未开始 | 半天 |
+| 任务 8：数据库索引（先 EXPLAIN 再补） | 未开始 | 半天 |
+| 任务 9：AI 调用 structured output + timeout | 未开始 | 1 天 |
+| 任务 10：配置管理迁移 pydantic-settings | 未开始 | 1 天 |
+| 任务 11：统一错误处理 | 未开始 | 半天 |
+| Qdrant 维度迁移（运维操作） | 待执行 | — |
