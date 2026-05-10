@@ -5,12 +5,16 @@ from pathlib import Path
 
 from application.services.phase4_workflow_service import Phase4WorkflowServices, ReviewConflictError
 from domain.entities import ArtifactRecord
-from domain.enums import ReviewStatus, ReviewType, StageType
+from domain.enums import CandidateStatus, ReviewStatus, ReviewType, StageType
 from domain.message_contracts import PipelineStageMessage
 from domain.repositories import ArtifactRepository
 from domain.storage import MediaStorageService
 from domain.time_utils import utc_now
 from infrastructure.pipeline.legacy_producer_adapter import ProducerBackendFactory
+from utils.logger_manager import log_manager
+
+
+stage_logger = log_manager.get_task_logger("PIPELINE")
 
 
 class PipelineStageHandlers:
@@ -21,12 +25,14 @@ class PipelineStageHandlers:
         producer_backend_factory: ProducerBackendFactory,
         workflow_services: Phase4WorkflowServices | None = None,
         artifact_repository: ArtifactRepository | None = None,
+        vector_repository=None,
         final_artifact_retention_days: int = 0,
     ) -> None:
         self.media_storage = media_storage
         self.producer_backend_factory = producer_backend_factory
         self.workflow_services = workflow_services
         self.artifact_repository = artifact_repository
+        self.vector_repository = vector_repository
         self.final_artifact_retention_days = final_artifact_retention_days
 
     def as_mapping(self):
@@ -41,19 +47,24 @@ class PipelineStageHandlers:
         }
 
     def download(self, message: PipelineStageMessage) -> dict:
+        stage_logger.info("开始下载候选视频: %s", message.song_name)
         workspace = self.media_storage.prepare_task_workspace(message.job_id)
         backend = self.producer_backend_factory()
         backend.temp_dir = workspace
         raw_video_path = self.media_storage.resolve_temp_file(message.job_id, "raw_video.mp4")
         video_ref = backend.download_step(message.song_name, output_path=raw_video_path)
+        self._set_candidate_status(message, CandidateStatus.PENDING_REVIEW)
+        stage_logger.info("下载完成，视频已保存: %s", video_ref)
         return {"video_ref": str(video_ref), "raw_video_path": raw_video_path}
 
     def transcribe(self, message: PipelineStageMessage) -> dict:
+        stage_logger.info("开始转写候选视频音频。")
         video_ref = message.payload.get("video_ref") or self.media_storage.resolve_temp_file(message.job_id, "raw_video.mp4")
         backend = self.producer_backend_factory()
         backend.temp_dir = self.media_storage.prepare_task_workspace(message.job_id)
         audio_path = self.media_storage.resolve_temp_file(message.job_id, "temp_audio.wav")
         segments, english_texts = backend.transcribe_step(video_ref, audio_path)
+        stage_logger.info("转写完成，共生成 %s 个歌词片段。", len(segments))
         normalized_segments = [
             {
                 "start_time": segment.get("start", segment.get("start_time", 0.0)),
@@ -82,25 +93,54 @@ class PipelineStageHandlers:
         }
 
     def audit(self, message: PipelineStageMessage) -> dict:
+        stage_logger.info("开始 AI 品味审计。")
+        backend = self.producer_backend_factory()
+        english_texts = [
+            str(text)
+            for text in (message.payload.get("english_texts") or [])
+            if str(text).strip()
+        ]
+        audit_result = {}
+        if hasattr(backend, "audit_step"):
+            references = message.payload.get("audit_references") or self._search_audit_references(message, english_texts)
+            audit_result = backend.audit_step(
+                english_texts,
+                title=message.song_name,
+                references=references,
+            )
+        score = audit_result.get("score")
+        decision = str(audit_result.get("decision", "Reject")).strip().lower()
+        approve = decision == "pass" or decision == "approved" or (
+            decision not in {"reject", "rejected", "fail", "failed"} and float(score or 0) >= 60
+        )
         candidate_id = message.review.candidate_id
         if candidate_id and self.workflow_services is not None:
             try:
                 self.workflow_services.automation_service.record_taste_audit(
                     candidate_id=candidate_id,
                     actor_id="phase6-auditor",
-                    approve=True,
-                    comment="Phase 6 async taste audit passed.",
-                    score=0.8,
-                    key_lyrics=(message.payload.get("english_texts") or [])[:3],
+                    approve=approve,
+                    comment=audit_result.get("reason") or "Phase 6 async taste audit completed.",
+                    score=float(score or 0),
+                    key_lyrics=audit_result.get("key_lyrics") or english_texts[:3],
                 )
             except ReviewConflictError:
                 pass
-        return {}
+        if not approve:
+            stage_logger.warning("AI 品味审计未通过: score=%s decision=%s", score, audit_result.get("decision"))
+            return {
+                "pause": True,
+                "pause_reason": "taste_audit_rejected",
+                "audit": audit_result,
+            }
+        stage_logger.info("AI 品味审计通过: score=%s decision=%s", score, audit_result.get("decision"))
+        return {"audit": audit_result}
 
     def manual_review_gate(self, message: PipelineStageMessage) -> dict:
         return self._review_gate(message, ReviewType.MANUAL_REVIEW, "manual_review_pending")
 
     def translate(self, message: PipelineStageMessage) -> dict:
+        stage_logger.info("开始 AI 歌词翻译并生成双语 SRT。")
         backend = self.producer_backend_factory()
         backend.temp_dir = self.media_storage.prepare_task_workspace(message.job_id)
         segments = message.payload.get("segments") or []
@@ -109,6 +149,7 @@ class PipelineStageHandlers:
         ]
         srt_path = self.media_storage.resolve_temp_file(message.job_id, "bilingual.srt")
         subtitle_file = backend.generate_bilingual_srt(segments, english_texts, output_file=srt_path)
+        stage_logger.info("翻译完成，双语字幕已生成: %s", subtitle_file)
         candidate_id = message.review.candidate_id
         if candidate_id and self.workflow_services is not None:
             translations = self._read_translation_lines(subtitle_file)
@@ -128,12 +169,14 @@ class PipelineStageHandlers:
         return self._review_gate(message, ReviewType.TRANSLATION_REVIEW, "translation_review_pending")
 
     def render(self, message: PipelineStageMessage) -> dict:
+        stage_logger.info("开始压制双语字幕到视频。")
         backend = self.producer_backend_factory()
         backend.temp_dir = self.media_storage.prepare_task_workspace(message.job_id)
         video_ref = message.payload.get("video_ref") or self.media_storage.resolve_temp_file(message.job_id, "raw_video.mp4")
         subtitle_file = message.payload.get("subtitle_file") or self.media_storage.resolve_temp_file(message.job_id, "bilingual.srt")
         final_output = self.media_storage.resolve_final_output(message.job_id)
         backend.burn_video(video_ref, subtitle_file, final_path=final_output)
+        stage_logger.info("视频压制完成，开始上传产物: %s", final_output)
         final_video_artifact = self.media_storage.upload_artifact(
             task_id=message.job_id,
             local_path=final_output,
@@ -148,6 +191,7 @@ class PipelineStageHandlers:
         )
         self._record_artifact(message, final_video_artifact)
         self._record_artifact(message, subtitle_artifact)
+        stage_logger.info("最终视频和字幕产物已登记。")
         return {"artifact_uri": final_video_artifact.object_uri}
 
     def _review_gate(
@@ -201,6 +245,42 @@ class PipelineStageHandlers:
                 expires_at=expires_at,
             )
         )
+
+    def _set_candidate_status(self, message: PipelineStageMessage, status: CandidateStatus) -> None:
+        candidate_id = message.review.candidate_id
+        if not candidate_id or self.workflow_services is None:
+            return
+        candidate_repository = self.workflow_services.pipeline_service.support.candidate_repository
+        candidate = candidate_repository.get(candidate_id)
+        if candidate is None:
+            return
+        candidate.status = status
+        candidate.last_seen_at = utc_now()
+        candidate_repository.upsert(candidate)
+
+    def _search_audit_references(self, message: PipelineStageMessage, english_texts: list[str]) -> list[dict]:
+        repository = getattr(self, "vector_repository", None)
+        if repository is None:
+            stage_logger.info("未配置 RAG 向量库，AI 审计将不带相似品味参考。")
+            return []
+        try:
+            from application.services.phase8_vectors import AUDIT_STYLE_MEMORY
+
+            query = "\n".join(english_texts[:20]) or message.song_name
+            records = repository.search(AUDIT_STYLE_MEMORY, query, limit=3)
+        except Exception as exc:
+            stage_logger.warning("RAG 相似品味检索失败，继续无参考审计: %s", exc)
+            return []
+        references = [
+            {
+                "title": record.metadata.get("title") or record.metadata.get("artist") or record.vector_id,
+                "lyrics": record.text,
+                "score": record.score,
+            }
+            for record in records
+        ]
+        stage_logger.info("RAG 相似品味检索完成，返回 %s 条参考。", len(references))
+        return references
 
     @staticmethod
     def _read_translation_lines(srt_path: str) -> list[dict]:

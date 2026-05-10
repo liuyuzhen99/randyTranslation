@@ -118,6 +118,10 @@ class PipelineStageExecutionRepository(ABC):
     def list_for_candidate(self, candidate_id: str) -> list[PipelineStageExecution]:
         raise NotImplementedError
 
+    @abstractmethod
+    def list_due_retries(self, now: datetime, limit: int = 100) -> list[PipelineStageExecution]:
+        raise NotImplementedError
+
 
 class ArtistSyncRunRepository(ABC):
     @abstractmethod
@@ -208,6 +212,14 @@ class ArtifactRepository(ABC):
 class VectorRepository(ABC):
     @abstractmethod
     def upsert(self, record: VectorRecord) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_by_namespace(self, namespace: str, limit: int = 1000, offset: int = 0) -> list[VectorRecord]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def count_by_namespace(self, namespace: str) -> int:
         raise NotImplementedError
 
     @abstractmethod

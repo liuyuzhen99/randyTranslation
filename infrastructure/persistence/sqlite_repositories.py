@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -324,8 +325,35 @@ class SQLiteVectorRepository(_SQLiteRepositoryMixin, VectorRepository):
                     text=excluded.text,
                     metadata_json=excluded.metadata_json
                 """,
-                (record.vector_id, record.namespace, record.text, str(record.metadata)),
+                (
+                    record.vector_id,
+                    record.namespace,
+                    record.text,
+                    json.dumps(record.metadata, ensure_ascii=False, sort_keys=True),
+                ),
             )
+
+    def list_by_namespace(self, namespace: str, limit: int = 1000, offset: int = 0) -> list[VectorRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT vector_id, namespace, text, metadata_json
+                FROM vectors
+                WHERE namespace=?
+                ORDER BY vector_id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (namespace, limit, offset),
+            ).fetchall()
+            return [self._record_from_row(row) for row in rows]
+
+    def count_by_namespace(self, namespace: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM vectors WHERE namespace=?",
+                (namespace,),
+            ).fetchone()
+            return int(row["count"])
 
     def search(self, namespace: str, text: str, limit: int = 5) -> list[VectorRecord]:
         # Temporary adapter: lexical LIKE search to preserve abstraction until Qdrant migration.
@@ -340,12 +368,17 @@ class SQLiteVectorRepository(_SQLiteRepositoryMixin, VectorRepository):
                 """,
                 (namespace, f"%{text}%", limit),
             ).fetchall()
-            return [
-                VectorRecord(
-                    vector_id=row["vector_id"],
-                    namespace=row["namespace"],
-                    text=row["text"],
-                    metadata={"raw": row["metadata_json"]},
-                )
-                for row in rows
-            ]
+            return [self._record_from_row(row) for row in rows]
+
+    @staticmethod
+    def _record_from_row(row) -> VectorRecord:
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except json.JSONDecodeError:
+            metadata = {"raw": row["metadata_json"]}
+        return VectorRecord(
+            vector_id=row["vector_id"],
+            namespace=row["namespace"],
+            text=row["text"],
+            metadata=metadata,
+        )

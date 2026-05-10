@@ -1,0 +1,87 @@
+{
+  "title": "randyTranslation Phase 7 Ops",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "tags": ["randyTranslation", "phase7"],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Queue Depth",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "randy_translation_queue_depth",
+          "legendFormat": "{{queue}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "DLQ Count",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "targets": [
+        {
+          "expr": "randy_translation_dlq_count"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Pending Reviews",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+      "targets": [
+        {
+          "expr": "randy_translation_pending_review_count"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Stage Latency",
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "randy_translation_stage_latency_seconds",
+          "legendFormat": "{{stage}} {{quantile}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Stage Status Count",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "randy_translation_stage_status_count",
+          "legendFormat": "{{stage}} {{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Retry Count",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "randy_translation_stage_retry_count",
+          "legendFormat": "{{stage}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Discovery Freshness",
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 4},
+      "targets": [
+        {
+          "expr": "randy_translation_discovery_freshness_seconds"
+        }
+      ]
+    }
+  ]
+}

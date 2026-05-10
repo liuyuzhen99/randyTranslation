@@ -252,6 +252,6 @@ whisperx==3.8.1
 xxhash==3.6.0
 yarg==0.1.9
 yarl==1.23.0
-yt-dlp==2026.2.21
+yt-dlp==2026.3.17
 zipp==3.23.0
 zstandard==0.25.0

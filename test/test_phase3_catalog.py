@@ -17,7 +17,7 @@ from application.services.phase3_catalog_service import (
     Phase3Providers,
 )
 from domain.entities import Artist
-from domain.enums import SyncStatus
+from domain.enums import CandidateStatus, SyncStatus
 from infrastructure.persistence.sqlalchemy_repositories import (
     SQLAlchemyArtistRepository,
     SQLAlchemyArtistSyncRunRepository,
@@ -149,6 +149,16 @@ class Phase3CatalogTests(unittest.TestCase):
             default_items, _ = service.list_artists(ArtistListFilters())
             self.assertEqual(default_items[0]["artist_id"], "artist-1")
             self.assertEqual([item["artist_id"] for item in default_items[:2]], ["artist-1", "artist-2"])
+            self.assertEqual(default_items[0]["candidate_count"], 2)
+
+            candidate_repository = SQLAlchemyCandidateRepository(session_factory)
+            first_candidate = candidate_repository.list_for_artist("artist-1")[0]
+            first_candidate.status = CandidateStatus.PENDING_REVIEW
+            candidate_repository.upsert(first_candidate)
+
+            updated_items, _ = service.list_artists(ArtistListFilters(sort="candidate_count_desc"))
+            updated_artist_one = next(item for item in updated_items if item["artist_id"] == "artist-1")
+            self.assertEqual(updated_artist_one["candidate_count"], 1)
 
             sync_sorted_items, _ = service.list_artists(ArtistListFilters(sort="sync_status_asc"))
             self.assertEqual(sync_sorted_items[0]["artist_id"], "artist-2")
@@ -207,7 +217,7 @@ class Phase3CatalogTests(unittest.TestCase):
             self.assertEqual(candidates_payload["artist_id"], "artist-1")
             self.assertEqual(candidates_payload["pagination"]["total"], 2)
             self.assertEqual(candidates_payload["pagination"]["total_pages"], 1)
-            self.assertEqual(candidates_payload["items"][0]["status"], "pending_review")
+            self.assertEqual(candidates_payload["items"][0]["status"], "discovered")
 
             self.assertEqual(resync_response.status_code, 200)
             resync_payload = resync_response.json()

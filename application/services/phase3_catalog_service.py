@@ -174,7 +174,7 @@ class VideoDiscoveryService:
                 title=item.title,
                 source_url=item.source_url,
                 source_kind=run.source_kind,
-                status=CandidateStatus.PENDING_REVIEW,
+                status=CandidateStatus.DISCOVERED,
                 ingestion_status=SyncStatus.COMPLETED,
                 published_at=item.published_at,
                 first_seen_at=now,
@@ -223,7 +223,7 @@ class CandidateCatalogService:
             ]
 
         candidate_count_by_artist = {
-            artist.spotify_id: len(self.candidate_repository.list_for_artist(artist.spotify_id))
+            artist.spotify_id: len(self._available_candidates_for_artist(artist.spotify_id))
             for artist in artists
         }
 
@@ -493,9 +493,10 @@ class CandidateCatalogService:
 
     def _artist_to_dto(self, artist: Artist) -> dict:
         candidates = self.candidate_repository.list_for_artist(artist.spotify_id)
+        available_candidates = self._available_candidates(candidates)
         runs = self.artist_sync_run_repository.list_for_artist(artist.spotify_id)
         latest_run = next(iter(runs), None)
-        latest_candidate = candidates[0] if candidates else None
+        latest_candidate = available_candidates[0] if available_candidates else None
         source_health = self._build_source_health(runs)
         partial_failure = any(
             source_state["status"] == SyncStatus.FAILED.value for source_state in source_health.values()
@@ -509,9 +510,9 @@ class CandidateCatalogService:
             "last_sync_started_at": self._iso(artist.last_sync_started_at),
             "last_sync_completed_at": self._iso(artist.last_sync_completed_at),
             "last_sync_error": artist.last_sync_error,
-            "candidate_count": len(candidates),
+            "candidate_count": len(available_candidates),
             "partial_failure": partial_failure,
-            "empty_state": len(candidates) == 0,
+            "empty_state": len(available_candidates) == 0,
             "retry_metadata": {
                 "can_resync": True,
                 "latest_retry_count": latest_run.retry_count if latest_run else 0,
@@ -531,6 +532,17 @@ class CandidateCatalogService:
             if latest_run
             else None,
         }
+
+    def _available_candidates_for_artist(self, artist_id: str) -> list[VideoCandidate]:
+        return self._available_candidates(self.candidate_repository.list_for_artist(artist_id))
+
+    @staticmethod
+    def _available_candidates(candidates: list[VideoCandidate]) -> list[VideoCandidate]:
+        return [
+            candidate
+            for candidate in candidates
+            if candidate.status == CandidateStatus.DISCOVERED
+        ]
 
     @staticmethod
     def _candidate_to_dto(candidate: VideoCandidate | None) -> dict | None:

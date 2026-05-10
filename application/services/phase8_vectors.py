@@ -1,0 +1,195 @@
+from __future__ import annotations
+
+import hashlib
+import math
+from dataclasses import dataclass, field
+from typing import Protocol
+
+from domain.entities import VectorRecord
+from domain.repositories import VectorRepository
+
+TRANSLATION_MEMORY = "translation_memory"
+AUDIT_STYLE_MEMORY = "user_taste_v1"
+PHASE8_COLLECTIONS = (TRANSLATION_MEMORY, AUDIT_STYLE_MEMORY)
+
+
+class EmbeddingProvider(Protocol):
+    dimension: int
+
+    def embed(self, text: str) -> list[float]:
+        ...
+
+
+class HashingEmbeddingProvider:
+    """Deterministic local embedding for repeatable migration/parity tests."""
+
+    def __init__(self, dimension: int = 384) -> None:
+        if dimension < 8:
+            raise ValueError("Embedding dimension must be at least 8.")
+        self.dimension = dimension
+
+    def embed(self, text: str) -> list[float]:
+        vector = [0.0] * self.dimension
+        tokens = [token for token in _tokenize(text) if token]
+        if not tokens:
+            tokens = [text.strip() or "empty"]
+        for token in tokens:
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            index = int.from_bytes(digest[:4], "big") % self.dimension
+            sign = 1.0 if digest[4] % 2 == 0 else -1.0
+            vector[index] += sign
+        norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+        return [value / norm for value in vector]
+
+
+@dataclass(frozen=True)
+class VectorBackfillReport:
+    namespace: str
+    source_count: int
+    upserted: int
+    skipped: int
+    mismatches: list[dict] = field(default_factory=list)
+
+    @property
+    def parity_ok(self) -> bool:
+        return not self.mismatches and self.source_count == self.upserted + self.skipped
+
+
+class Phase8VectorMigrationService:
+    def __init__(
+        self,
+        *,
+        source_repository: VectorRepository,
+        target_repository: VectorRepository,
+        embedding_provider: EmbeddingProvider,
+        batch_size: int = 100,
+    ) -> None:
+        self.source_repository = source_repository
+        self.target_repository = target_repository
+        self.embedding_provider = embedding_provider
+        self.batch_size = batch_size
+
+    def backfill_namespace(self, namespace: str, dry_run: bool = False) -> VectorBackfillReport:
+        source_count = self.source_repository.count_by_namespace(namespace)
+        upserted = 0
+        skipped = 0
+        mismatches: list[dict] = []
+        offset = 0
+
+        while offset < source_count:
+            batch = self.source_repository.list_by_namespace(
+                namespace,
+                limit=self.batch_size,
+                offset=offset,
+            )
+            if not batch:
+                break
+            for record in batch:
+                migrated = self._prepare_record(record)
+                if not migrated.text.strip():
+                    skipped += 1
+                    continue
+                if not dry_run:
+                    self.target_repository.upsert(migrated)
+                    target_matches = self.target_repository.search(
+                        namespace=migrated.namespace,
+                        text=migrated.text,
+                        limit=5,
+                    )
+                    if migrated.vector_id not in {item.vector_id for item in target_matches}:
+                        mismatches.append(
+                            {
+                                "vector_id": migrated.vector_id,
+                                "reason": "target_search_miss",
+                            }
+                        )
+                upserted += 1
+            offset += len(batch)
+
+        return VectorBackfillReport(
+            namespace=namespace,
+            source_count=source_count,
+            upserted=upserted,
+            skipped=skipped,
+            mismatches=mismatches,
+        )
+
+    def _prepare_record(self, record: VectorRecord) -> VectorRecord:
+        metadata = {
+            **record.metadata,
+            "phase8_source_namespace": record.namespace,
+            "phase8_deterministic_id": deterministic_vector_id(record.namespace, record.vector_id),
+        }
+        return VectorRecord(
+            vector_id=deterministic_vector_id(record.namespace, record.vector_id),
+            namespace=record.namespace,
+            text=record.text,
+            metadata=metadata,
+            embedding=record.embedding or self.embedding_provider.embed(record.text),
+        )
+
+
+@dataclass(frozen=True)
+class RetrievalQualityCase:
+    namespace: str
+    query: str
+    expected_ids: tuple[str, ...]
+    limit: int = 5
+
+
+@dataclass(frozen=True)
+class RetrievalQualityReport:
+    total_cases: int
+    passed_cases: int
+    failures: list[dict]
+
+    @property
+    def passed(self) -> bool:
+        return self.total_cases == self.passed_cases
+
+
+class Phase8RetrievalQualityEvaluator:
+    def __init__(self, repository: VectorRepository) -> None:
+        self.repository = repository
+
+    def evaluate(self, cases: list[RetrievalQualityCase]) -> RetrievalQualityReport:
+        failures: list[dict] = []
+        for case in cases:
+            results = self.repository.search(case.namespace, case.query, case.limit)
+            result_ids = [item.vector_id for item in results]
+            missing = [item for item in case.expected_ids if item not in result_ids]
+            if missing:
+                failures.append(
+                    {
+                        "namespace": case.namespace,
+                        "query": case.query,
+                        "expected_ids": list(case.expected_ids),
+                        "result_ids": result_ids,
+                        "missing": missing,
+                    }
+                )
+        return RetrievalQualityReport(
+            total_cases=len(cases),
+            passed_cases=len(cases) - len(failures),
+            failures=failures,
+        )
+
+
+def deterministic_vector_id(namespace: str, source_id: str) -> str:
+    digest = hashlib.sha256(f"{namespace}:{source_id}".encode("utf-8")).hexdigest()
+    raw = digest[:32]
+    return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:32]}"
+
+
+def _tokenize(text: str) -> list[str]:
+    normalized = []
+    current = []
+    for char in text.lower():
+        if char.isalnum():
+            current.append(char)
+        elif current:
+            normalized.append("".join(current))
+            current = []
+    if current:
+        normalized.append("".join(current))
+    return normalized

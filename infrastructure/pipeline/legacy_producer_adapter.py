@@ -12,6 +12,9 @@ class ProducerBackend(Protocol):
     def transcribe_step(self, video_ref, audio_path: str):
         ...
 
+    def audit_step(self, english_texts: list[str], *, title: str = "", references: list[dict] | None = None) -> dict:
+        ...
+
     def generate_bilingual_srt(self, segments, english_texts, output_file: str):
         ...
 
@@ -31,6 +34,9 @@ class MissingProducerBackend:
         self._raise()
 
     def transcribe_step(self, video_ref, audio_path: str):
+        self._raise()
+
+    def audit_step(self, english_texts: list[str], *, title: str = "", references: list[dict] | None = None) -> dict:
         self._raise()
 
     def generate_bilingual_srt(self, segments, english_texts, output_file: str):

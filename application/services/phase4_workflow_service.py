@@ -114,6 +114,8 @@ class WorkflowSupport:
 
     def bootstrap_reviews(self) -> None:
         for artist, candidate in self.list_candidates_with_artist():
+            if candidate.status not in {CandidateStatus.PENDING_REVIEW, CandidateStatus.DOWNLOADING}:
+                continue
             reviews = self.review_repository.list_for_subject("candidate", candidate.candidate_id)
             if reviews:
                 continue
@@ -137,11 +139,65 @@ class WorkflowSupport:
         reviews = self.review_repository.list_for_subject("candidate", candidate_id)
         return sorted(reviews, key=lambda review: review.created_at)
 
+    def get_latest_review_for_candidate(
+        self,
+        candidate_id: str,
+        review_type: ReviewType,
+    ) -> ReviewItem | None:
+        reviews = [
+            review
+            for review in self.get_reviews_for_candidate(candidate_id)
+            if review.review_type == review_type
+        ]
+        return reviews[-1] if reviews else None
+
     def get_candidate_or_raise(self, candidate_id: str) -> VideoCandidate:
         candidate = self.candidate_repository.get(candidate_id)
         if candidate is None:
             raise KeyError("Candidate not found")
         return candidate
+
+    def add_candidate_to_pipeline(self, candidate_id: str, actor_id: str) -> dict:
+        candidate = self.get_candidate_or_raise(candidate_id)
+        if candidate.status == CandidateStatus.ACCEPTED:
+            raise ReviewConflictError("Accepted candidates cannot be re-added to the review pipeline.")
+
+        reviews = self.get_reviews_for_candidate(candidate_id)
+        pending_review = next((review for review in reviews if review.status == ReviewStatus.PENDING), None)
+        created_review = False
+        if pending_review is None:
+            pending_review = ReviewItem(
+                review_id=self._new_id("review"),
+                subject_kind="candidate",
+                subject_id=candidate.candidate_id,
+                spotify_id=candidate.spotify_id,
+                review_type=ReviewType.TRANSCRIPT_REVIEW,
+            )
+            self.review_repository.create(pending_review)
+            created_review = True
+
+        if candidate.status != CandidateStatus.PENDING_REVIEW:
+            candidate.status = CandidateStatus.PENDING_REVIEW
+            self.candidate_repository.upsert(candidate)
+
+        self._log(
+            aggregate_type="candidate",
+            aggregate_id=candidate.candidate_id,
+            action="pipeline_manually_added",
+            actor_id=actor_id,
+            details=(
+                f"{pending_review.review_type.value}:{pending_review.review_id}:created={str(created_review).lower()}"
+            ),
+        )
+
+        return {
+            "candidate_id": candidate.candidate_id,
+            "candidate_status": candidate.status.value,
+            "review_id": pending_review.review_id,
+            "review_type": pending_review.review_type.value,
+            "review_status": pending_review.status.value,
+            "version": pending_review.version,
+        }
 
     def get_video_repository_or_raise(self) -> VideoRepository:
         if self.video_repository is None:
@@ -166,6 +222,7 @@ class WorkflowSupport:
                 "artifact_id": artifact.artifact_id,
                 "artifact_type": artifact.artifact_type,
                 "object_uri": artifact.object_uri,
+                "job_id": artifact.job_id,
                 "content_type": artifact.content_type,
                 "size_bytes": artifact.size_bytes,
                 "checksum_sha256": artifact.checksum_sha256,
@@ -189,6 +246,12 @@ class WorkflowSupport:
         if "delete_failed" in statuses:
             return "delete_failed"
         return "deleted" if "deleted" in statuses else "missing"
+
+    def has_ready_final_video_artifact(self, candidate_id: str) -> bool:
+        return any(
+            artifact["artifact_type"] == "final_video" and artifact["lifecycle_status"] == "ready"
+            for artifact in self.list_artifacts_for_candidate(candidate_id)
+        )
 
     def ensure_video_for_candidate(self, candidate: VideoCandidate) -> Video:
         video_repository = self.get_video_repository_or_raise()
@@ -238,6 +301,13 @@ class WorkflowSupport:
             raise ReviewConflictError(
                 f"Stale review version. expected={expected_version} current={review.version}"
             )
+
+        if (
+            approve
+            and review.review_type == ReviewType.FINAL_ASSET_APPROVAL
+            and not self.has_ready_final_video_artifact(review.subject_id)
+        ):
+            raise ReviewConflictError("Final asset approval requires a ready final_video artifact.")
 
         now = utc_now()
         review.status = ReviewStatus.APPROVED if approve else ReviewStatus.REJECTED
@@ -378,6 +448,13 @@ class AuditService:
                     "review_type": selected_review.review_type.value,
                     "status": selected_review.status.value,
                     "version": selected_review.version,
+                    "decided_by": selected_review.decided_by,
+                    "decided_at": (
+                        selected_review.decided_at.isoformat()
+                        if selected_review.decided_at is not None
+                        else None
+                    ),
+                    "decision_comment": selected_review.decision_comment,
                     "published_at": (
                         candidate.published_at.isoformat()
                         if candidate.published_at is not None
@@ -462,16 +539,82 @@ class PipelineService:
         self.support = support
         self.translation_service = translation_service
 
+    def add_candidate(self, candidate_id: str, actor_id: str) -> dict:
+        return self.support.add_candidate_to_pipeline(candidate_id, actor_id)
+
+    def get_candidate_detail(self, candidate_id: str) -> dict:
+        self.support.bootstrap_reviews()
+        candidate = self.support.get_candidate_or_raise(candidate_id)
+        artist = self.support.artist_repository.get(candidate.spotify_id)
+        reviews = self.support.get_reviews_for_candidate(candidate_id)
+        subtitles = self.support.get_subtitle_repository_or_raise().list_for_video(candidate.video_id)
+        audit_logs = self.support.audit_log_repository.list_for_aggregate("candidate", candidate_id)
+
+        return {
+            "candidate_id": candidate.candidate_id,
+            "artist_id": candidate.spotify_id,
+            "artist_name": artist.name if artist is not None else candidate.spotify_id,
+            "candidate_title": candidate.title,
+            "source_url": candidate.source_url,
+            "workflow_status": candidate.status.value,
+            "current_stage": self._current_stage(candidate, reviews),
+            "reviews": [
+                {
+                    "review_id": review.review_id,
+                    "review_type": review.review_type.value,
+                    "status": review.status.value,
+                    "version": review.version,
+                    "decision_comment": review.decision_comment,
+                    "decided_by": review.decided_by,
+                    "decided_at": review.decided_at.isoformat() if review.decided_at else None,
+                    "created_at": review.created_at.isoformat(),
+                    "updated_at": review.updated_at.isoformat(),
+                }
+                for review in reviews
+            ],
+            "transcript": {
+                "video_id": candidate.video_id,
+                "segment_count": len(subtitles),
+                "segments": [
+                    {
+                        "line_index": subtitle.line_index,
+                        "start_time": subtitle.start_time,
+                        "end_time": subtitle.end_time,
+                        "text": subtitle.en_text,
+                        "status": subtitle.status.value,
+                    }
+                    for subtitle in subtitles
+                ],
+            },
+            "taste_audit": self._latest_structured_audit_payload(audit_logs, "taste_audit_recorded"),
+            "translation": {
+                "line_count": len([subtitle for subtitle in subtitles if subtitle.zh_text]),
+                "lines": [
+                    {
+                        "line_index": subtitle.line_index,
+                        "start_time": subtitle.start_time,
+                        "end_time": subtitle.end_time,
+                        "source_text": subtitle.en_text,
+                        "translated_text": subtitle.zh_text,
+                        "status": subtitle.status.value,
+                    }
+                    for subtitle in subtitles
+                ],
+            },
+        }
+
     def list_pipeline(self) -> list[dict]:
         self.support.bootstrap_reviews()
         items: list[dict] = []
         for artist, candidate in self.support.list_candidates_with_artist():
+            if candidate.status not in {CandidateStatus.PENDING_REVIEW, CandidateStatus.DOWNLOADING}:
+                continue
             reviews = self.support.get_reviews_for_candidate(candidate.candidate_id)
             subtitles = self.support.get_subtitle_repository_or_raise().list_for_video(candidate.video_id)
             current_review = next((review for review in reviews if review.status == ReviewStatus.PENDING), None)
             stage_items = []
             for review_type in self.support.REVIEW_SEQUENCE:
-                review = next((item for item in reviews if item.review_type == review_type), None)
+                review = self.support.get_latest_review_for_candidate(candidate.candidate_id, review_type)
                 stage_items.append(
                     {
                         "stage": review_type.value,
@@ -485,8 +628,11 @@ class PipelineService:
                     "artist_name": artist.name,
                     "candidate_title": candidate.title,
                     "workflow_status": candidate.status.value,
+                    "artifact_status": self.support.get_candidate_artifact_status(candidate.candidate_id),
                     "current_stage": (
-                        current_review.review_type.value
+                        "downloading"
+                        if candidate.status == CandidateStatus.DOWNLOADING
+                        else current_review.review_type.value
                         if current_review is not None
                         else "completed"
                         if candidate.status == CandidateStatus.ACCEPTED
@@ -503,6 +649,31 @@ class PipelineService:
                 }
             )
         return items
+
+    @staticmethod
+    def _latest_structured_audit_payload(audit_logs: list[AuditLogEntry], action: str) -> dict | None:
+        matching_logs = [entry for entry in audit_logs if entry.action == action and entry.details]
+        if not matching_logs:
+            return None
+        latest = matching_logs[-1]
+        try:
+            payload = json.loads(latest.details or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw_details": latest.details}
+        payload["recorded_at"] = latest.created_at.isoformat()
+        payload["recorded_by"] = latest.actor_id
+        return payload
+
+    @staticmethod
+    def _current_stage(candidate: VideoCandidate, reviews: list[ReviewItem]) -> str:
+        current_review = next((review for review in reviews if review.status == ReviewStatus.PENDING), None)
+        if current_review is not None:
+            return current_review.review_type.value
+        if candidate.status == CandidateStatus.ACCEPTED:
+            return "completed"
+        if candidate.status == CandidateStatus.REJECTED:
+            return "rejected"
+        return "not_started"
 
 
 class LibraryService:

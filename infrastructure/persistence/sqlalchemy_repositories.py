@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from datetime import datetime
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -21,6 +22,7 @@ from domain.entities import (
     VideoCandidate,
 )
 from domain.job_lifecycle import validate_job_transition
+from domain.enums import StageStatus
 from domain.time_utils import utc_now
 from domain.repositories import (
     ArtifactRepository,
@@ -57,7 +59,8 @@ class SQLAlchemySessionFactory:
     """Small session wrapper so repositories share one engine/config entry point."""
 
     def __init__(self, database_url: str) -> None:
-        self.engine: Engine = create_engine(database_url, future=True)
+        connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+        self.engine: Engine = create_engine(database_url, future=True, connect_args=connect_args)
         self._sessionmaker = sessionmaker(bind=self.engine, expire_on_commit=False, future=True)
 
     def create_schema(self) -> None:
@@ -428,6 +431,22 @@ class SQLAlchemyPipelineStageExecutionRepository(PipelineStageExecutionRepositor
                     select(PipelineStageExecutionModel)
                     .where(PipelineStageExecutionModel.candidate_id == candidate_id)
                     .order_by(PipelineStageExecutionModel.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [self._to_entity(row) for row in rows]
+
+    def list_due_retries(self, now: datetime, limit: int = 100) -> list[PipelineStageExecution]:
+        with self.session_factory.session_scope() as session:
+            rows = (
+                session.execute(
+                    select(PipelineStageExecutionModel)
+                    .where(PipelineStageExecutionModel.status == StageStatus.RETRY_SCHEDULED)
+                    .where(PipelineStageExecutionModel.next_retry_at.is_not(None))
+                    .where(PipelineStageExecutionModel.next_retry_at <= now)
+                    .order_by(PipelineStageExecutionModel.next_retry_at.asc())
+                    .limit(limit)
                 )
                 .scalars()
                 .all()

@@ -4,7 +4,7 @@
 
 Phase 6 的异步流水线主干已经交付：后端完成了 RabbitMQ 拓扑、阶段消息契约、阶段执行记录、幂等 worker、事务型 outbox 发布路径、人工审核闸门恢复逻辑，以及前端 Pipeline 页面中的异步执行状态展示。经过本地 RabbitMQ、Postgres 迁移、后端 API、前端 BFF 与浏览器页面联调，核心链路可以从命令消息进入 worker，完成阶段执行记录，并将下一阶段消息写入队列。
 
-本阶段当前达到“可联调、可演示、具备生产骨架”的状态，但仍有几项生产化收尾建议：AI/RAG 审核逻辑仍是占位实现，延迟重试调度还需要正式的 delayed delivery 机制，worker 运行方式需要纳入部署脚本或 Compose，RabbitMQ 拓扑和 worker 健康检查也建议接入 CI/CD 与运维监控。
+本阶段当前达到“可联调、可演示、具备生产骨架”的状态。本轮在原 Phase 6 基础上补齐了 DB-backed delayed retry scheduler、RabbitMQ + PostgreSQL + worker opt-in 集成测试、worker 多实例 CLI、launchd/runbook，以及 Phase 7 queue depth、stage latency、DLQ count 观测快照。剩余生产化收尾主要集中在 AI/RAG 审核真实实现、worker 健康检查、dashboard/exporter 和 CI 外部服务编排。
 
 ## 评审范围
 
@@ -14,6 +14,10 @@ Phase 6 的异步流水线主干已经交付：后端完成了 RabbitMQ 拓扑�
 - 人工审核与翻译审核两个暂停/恢复闸门。
 - API 与前端 Pipeline 页面联调展示。
 - 本地 RabbitMQ、Postgres 迁移、浏览器端到端烟测。
+- DB retry scheduler delayed delivery。
+- RabbitMQ + PostgreSQL + worker opt-in 集成测试。
+- worker 多实例运行方式和 launchd runbook。
+- Phase 7 queue observability snapshot。
 
 ## 核心实现
 
@@ -56,6 +60,42 @@ RabbitMQ 相关实现位于 [infrastructure/messaging](/Users/randy/Documents/co
 - `rabbitmq_consumer.py`：消费单个队列，执行 worker 后 ack，未持久化异常时 nack 到 DLQ。
 
 worker CLI 位于 [workers/phase6_worker.py](/Users/randy/Documents/code/randyTranslation/randyTranslation/workers/phase6_worker.py)，支持 `--declare-only` 声明拓扑，也支持 `--queue` 指定消费队列。declare-only 模式默认使用本地 `amqp://guest:guest@localhost:5672/`，方便本机 RabbitMQ 快速烟测。
+
+CLI 现在还支持 `--instances` 和 `--prefetch`，可在同一个队列上启动多个 worker 进程：
+
+```bash
+PYTHONPATH=. python workers/phase6_worker.py --queue pipeline.stage.transcribe --instances 4 --prefetch 1
+```
+
+非 Docker 部署手册位于 [docs/phase6-worker-runbook.md](/Users/randy/Documents/code/randyTranslation/randyTranslation/docs/phase6-worker-runbook.md)，覆盖环境变量、拓扑声明、单实例/多实例 worker、bounded smoke drain、DB retry scheduler 和 launchd 示例。
+
+### DB retry scheduler
+
+新增 [application/services/retry_scheduler.py](/Users/randy/Documents/code/randyTranslation/randyTranslation/application/services/retry_scheduler.py)。worker 失败但未达到最大尝试次数时，现在只记录 `retry_scheduled` 和 `next_retry_at`，不会立即写 retry outbox。scheduler 到期扫描后创建下一次 attempt message，并清空旧 execution 的 `next_retry_at` 以避免重复调度。
+
+CLI 和 API 均有入口：
+
+```bash
+PYTHONPATH=. python workers/phase6_worker.py --schedule-retries --retry-limit 100
+POST /internal/phase6/retry-scheduler/run?limit=100
+```
+
+这个方案满足 delayed delivery 的 DB scheduler 形态，不依赖 RabbitMQ delayed exchange 插件或 TTL retry queue。
+
+### Phase 7 observability
+
+新增 [application/services/phase7_observability.py](/Users/randy/Documents/code/randyTranslation/randyTranslation/application/services/phase7_observability.py) 和 [infrastructure/messaging/rabbitmq_observability.py](/Users/randy/Documents/code/randyTranslation/randyTranslation/infrastructure/messaging/rabbitmq_observability.py)，并暴露：
+
+```text
+GET /internal/phase7/observability
+```
+
+当前返回：
+
+- `queue_depth`：RabbitMQ 每个 Phase 6 queue 的 message count。
+- `dlq_count`：`pipeline.dlq` 深度。
+- `stage_latency_seconds`：按 stage 计算 completed count、avg、p95。
+- `stage_status_counts`：按 stage/status 聚合 execution 记录。
 
 ### 阶段处理器
 
@@ -115,6 +155,7 @@ API 在审核通过时会检测 Phase 6 开关，并根据审核类型恢复流�
 - `test_phase4_workflow.py`
 - `test_phase5_cos_storage.py`
 - `test_phase6_async_pipeline.py`
+- `test_phase6_rabbitmq_postgres_integration.py`，默认跳过；设置 `RUN_PHASE6_RABBITMQ_POSTGRES_INTEGRATION=true`、`DATABASE_URL`、`RABBITMQ_URL` 后运行真实 RabbitMQ + PostgreSQL + worker round-trip。
 
 已完成的前端验证：
 
@@ -133,14 +174,14 @@ API 在审核通过时会检测 Phase 6 开关，并根据审核类型恢复流�
 1. AI/RAG audit 尚未生产化  
    `audit` 阶段目前是 workflow placeholder，会写入通过状态并推进人工审核。真实 taste audit 需要接入 Phase 5 的检索、评分和可解释结果。
 
-2. 延迟重试还不是完整调度能力  
-   当前 worker 会记录 retry 和 backoff 上下文，但生产环境建议接入 RabbitMQ delayed exchange、TTL retry queue 或独立 scheduler，保证重试延迟可控且可观测。
+2. Retry scheduler 需要生产运行编排  
+   delayed delivery 已采用 DB scheduler 方案实现，但生产环境还需要用 launchd/cron/编排系统保证 scheduler 周期运行，并监控 scheduler 失败。
 
-3. Worker 部署仍需补齐  
-   CLI 已可运行，但还需要把多个阶段 worker 的启动方式纳入 Docker Compose、systemd、launchd 或生产编排系统，并配置并发、prefetch、日志和健康检查。
+3. Worker 健康检查仍需补齐  
+   CLI 已支持多实例和 prefetch，runbook 已覆盖 launchd 示例；后续仍建议增加健康检查、优雅关闭、日志聚合和 per-stage worker dashboard。
 
-4. Queue observability 需要继续增强  
-   建议为队列长度、DLQ 数量、阶段耗时、失败率、重试次数、暂停数量增加 metrics 和 dashboard。
+4. Queue observability 已有 snapshot，但还不是 exporter  
+   `/internal/phase7/observability` 已返回 queue depth、DLQ count、stage latency 和 status counts；后续建议接入 Prometheus/OpenTelemetry 并落 dashboard。
 
 5. 审核恢复依赖 result payload 完整性  
    当前恢复逻辑会复用最近阶段执行记录中的 payload。后续如果 handler payload 结构继续扩展，建议为每个阶段的输入/输出加 schema 测试，避免人工审核暂停后恢复缺字段。
@@ -148,10 +189,10 @@ API 在审核通过时会检测 Phase 6 开关，并根据审核类型恢复流�
 ## 后续建议
 
 - 将 `audit` handler 接入真实 AI/RAG taste audit，并把审核解释写入 review metadata。
-- 为 retry 引入正式 delayed delivery 机制。
-- 增加 worker 运行文档和一键启动脚本。
+- 将 DB retry scheduler 纳入 launchd/生产编排，并增加失败告警。
+- 增加 worker 健康检查和一键启动脚本。
 - 在 CI 中增加 Alembic upgrade head、Phase 6 单测和前端 Pipeline schema 测试。
-- 增加 `/internal/phase6` 或运维页面的队列健康、DLQ 查看、手动重放能力。
+- 将 `/internal/phase7/observability` 接入 metrics exporter，并补齐 DLQ 查看、手动重放能力。
 - 为 Phase 6 增加一条更完整的端到端测试：创建任务、跑到 manual review 暂停、审批恢复、跑到 translation review 暂停、审批恢复、render 产物落库。
 
 ## 总体评价

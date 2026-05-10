@@ -42,6 +42,16 @@ class FakeCOSClient:
         return f"https://cos.example/{Bucket}/{Key}?method={Method}&expires={Expired}"
 
 
+class FailingMultipartCOSClient(FakeCOSClient):
+    def upload_file(self, *, Bucket, LocalFilePath, Key, PartSize, MAXThread, EnableMD5):
+        raise RuntimeError("some upload_part fail after max_retry, please upload_file again")
+
+    def put_object_from_local_file(self, *, Bucket, LocalFilePath, Key):
+        with open(LocalFilePath, "rb") as file_obj:
+            self.objects[(Bucket, Key)] = file_obj.read()
+        self.fallback_upload = {"Bucket": Bucket, "Key": Key}
+
+
 class Phase5COSStorageTests(unittest.TestCase):
     def test_tencent_cos_storage_lifecycle_with_injected_client(self):
         with tempfile.TemporaryDirectory() as temp_root:
@@ -85,6 +95,30 @@ class Phase5COSStorageTests(unittest.TestCase):
 
             storage.cleanup_task_workspace("job cos/01")
             self.assertFalse(os.path.exists(workspace))
+
+    def test_tencent_cos_storage_falls_back_when_multipart_upload_fails(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            client = FailingMultipartCOSClient()
+            storage = TencentCOSMediaStorage(
+                temp_root=temp_root,
+                bucket="randy-translation-1250000000",
+                region="ap-shanghai",
+                client=client,
+            )
+            storage.prepare_task_workspace("job-fallback")
+            local_file = storage.resolve_temp_file("job-fallback", "final_video.mp4")
+            with open(local_file, "wb") as file_obj:
+                file_obj.write(b"fallback artifact")
+
+            artifact = storage.upload_artifact(
+                "job-fallback",
+                local_file,
+                artifact_type="final_video",
+                content_type="video/mp4",
+            )
+
+            self.assertEqual(client.objects[(artifact.bucket, artifact.object_key)], b"fallback artifact")
+            self.assertEqual(client.fallback_upload["Key"], artifact.object_key)
 
     def test_create_media_storage_uses_local_by_default(self):
         settings = load_runtime_settings({"JOB_REPOSITORY_BACKEND": "memory"})

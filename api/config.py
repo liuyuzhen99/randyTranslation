@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from application.services.outbox_dispatcher import OutboxDispatcher
 from application.services.async_pipeline import AsyncPipelineCommandService, PipelineStageWorker
 from application.services.pipeline_stage_handlers import PipelineStageHandlers
+from application.services.phase8_vectors import HashingEmbeddingProvider
 from application.services.phase4_workflow_service import (
     Phase4WorkflowServices,
     build_phase4_workflow_services,
@@ -44,6 +45,7 @@ from infrastructure.persistence.sqlite_repositories import SQLiteJobRepository
 from infrastructure.storage.cos_media_storage import TencentCOSMediaStorage
 from infrastructure.storage.local_media_storage import LocalFilesystemMediaStorage
 from infrastructure.messaging.rabbitmq_publisher import RabbitMQPublishConfig, RabbitMQPublisher
+from infrastructure.vector.qdrant_repository import QdrantVectorRepository
 
 # Current runtime requirements (Phase 0 fail-fast scope).
 REQUIRED_ENV_VARS: tuple[str, ...] = (
@@ -67,6 +69,8 @@ KNOWN_ENV_VARS: tuple[str, ...] = (
     "PHASE2_RECONCILE_MAX_OUTBOX_PAYLOAD_MISMATCHES",
     "PHASE2_OUTBOX_DISPATCH_ENABLED",
     "PHASE6_ASYNC_PIPELINE_ENABLED",
+    "PHASE6_SERVICE_WORKER_ENABLED",
+    "PHASE6_SERVICE_WORKER_POLL_SECONDS",
     "PHASE6_MAX_STAGE_ATTEMPTS",
     "PHASE6_RETRY_BACKOFF_BASE_SECONDS",
     "MEDIA_STORAGE_BACKEND",
@@ -88,6 +92,14 @@ KNOWN_ENV_VARS: tuple[str, ...] = (
     "RABBITMQ_PASSWORD",
     "QDRANT_URL",
     "QDRANT_API_KEY",
+    "VECTOR_REPOSITORY_BACKEND",
+    "VECTOR_EMBEDDING_DIMENSION",
+    "QDRANT_COLLECTION_PREFIX",
+    "PHASE9_CUTOVER_READ_SOURCE",
+    "PHASE9_SCHEMA_FREEZE_ENABLED",
+    "PHASE9_ROLLBACK_ENABLED",
+    "PHASE9_STABILITY_WINDOW_DAYS",
+    "PHASE9_SHADOW_TRAFFIC_ENABLED",
     "S3_ENDPOINT_URL",
     "S3_ACCESS_KEY_ID",
     "S3_SECRET_ACCESS_KEY",
@@ -128,11 +140,21 @@ class AppRuntimeSettings:
     phase2_reconcile_max_outbox_payload_mismatches: int = 0
     phase2_outbox_dispatch_enabled: bool = False
     phase6_async_pipeline_enabled: bool = False
+    phase6_service_worker_enabled: bool = True
+    phase6_service_worker_poll_seconds: float = 1.0
     phase6_max_stage_attempts: int = 3
     phase6_retry_backoff_base_seconds: int = 30
     media_storage_backend: str = "local"
     artifact_temp_retention_days: int = 1
     artifact_final_retention_days: int = 0
+    vector_repository_backend: str = "sqlite"
+    vector_embedding_dimension: int = 384
+    qdrant_collection_prefix: str = ""
+    phase9_cutover_read_source: str = "legacy"
+    phase9_schema_freeze_enabled: bool = False
+    phase9_rollback_enabled: bool = True
+    phase9_stability_window_days: int = 7
+    phase9_shadow_traffic_enabled: bool = False
 
 
 def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntimeSettings:
@@ -197,6 +219,12 @@ def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntim
         "yes",
         "on",
     }
+    phase6_service_worker_enabled = _read_bool(source, "PHASE6_SERVICE_WORKER_ENABLED", default=True)
+    phase6_service_worker_poll_seconds = _read_non_negative_float(
+        source,
+        "PHASE6_SERVICE_WORKER_POLL_SECONDS",
+        default=1.0,
+    )
     phase6_max_stage_attempts = _read_non_negative_int(source, "PHASE6_MAX_STAGE_ATTEMPTS", default=3)
     if phase6_max_stage_attempts < 1:
         raise RuntimeError("PHASE6_MAX_STAGE_ATTEMPTS must be at least 1.")
@@ -210,6 +238,30 @@ def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntim
         raise RuntimeError("Invalid MEDIA_STORAGE_BACKEND. Expected one of: local, cos.")
     artifact_temp_retention_days = _read_non_negative_int(source, "ARTIFACT_TEMP_RETENTION_DAYS", default=1)
     artifact_final_retention_days = _read_non_negative_int(source, "ARTIFACT_FINAL_RETENTION_DAYS")
+    vector_repository_backend = source.get("VECTOR_REPOSITORY_BACKEND", "sqlite").strip().lower() or "sqlite"
+    if vector_repository_backend not in {"sqlite", "qdrant"}:
+        raise RuntimeError("Invalid VECTOR_REPOSITORY_BACKEND. Expected one of: sqlite, qdrant.")
+    vector_embedding_dimension = _read_non_negative_int(
+        source,
+        "VECTOR_EMBEDDING_DIMENSION",
+        default=384,
+    )
+    if vector_embedding_dimension < 8:
+        raise RuntimeError("VECTOR_EMBEDDING_DIMENSION must be at least 8.")
+    qdrant_collection_prefix = source.get("QDRANT_COLLECTION_PREFIX", "").strip()
+    phase9_cutover_read_source = source.get("PHASE9_CUTOVER_READ_SOURCE", "legacy").strip().lower() or "legacy"
+    if phase9_cutover_read_source not in {"legacy", "postgres", "qdrant"}:
+        raise RuntimeError(
+            "Invalid PHASE9_CUTOVER_READ_SOURCE. Expected one of: legacy, postgres, qdrant."
+        )
+    phase9_schema_freeze_enabled = _read_bool(source, "PHASE9_SCHEMA_FREEZE_ENABLED")
+    phase9_rollback_enabled = _read_bool(source, "PHASE9_ROLLBACK_ENABLED", default=True)
+    phase9_stability_window_days = _read_non_negative_int(
+        source,
+        "PHASE9_STABILITY_WINDOW_DAYS",
+        default=7,
+    )
+    phase9_shadow_traffic_enabled = _read_bool(source, "PHASE9_SHADOW_TRAFFIC_ENABLED")
     if not database_url:
         postgres_host = source.get("POSTGRES_HOST", "").strip()
         postgres_port = source.get("POSTGRES_PORT", "").strip() or "5432"
@@ -236,12 +288,41 @@ def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntim
         phase2_reconcile_max_outbox_payload_mismatches=reconcile_max_outbox_payload_mismatches,
         phase2_outbox_dispatch_enabled=outbox_dispatch_enabled,
         phase6_async_pipeline_enabled=phase6_async_pipeline_enabled,
+        phase6_service_worker_enabled=phase6_service_worker_enabled,
+        phase6_service_worker_poll_seconds=phase6_service_worker_poll_seconds,
         phase6_max_stage_attempts=phase6_max_stage_attempts,
         phase6_retry_backoff_base_seconds=phase6_retry_backoff_base_seconds,
         media_storage_backend=media_storage_backend,
         artifact_temp_retention_days=artifact_temp_retention_days,
         artifact_final_retention_days=artifact_final_retention_days,
+        vector_repository_backend=vector_repository_backend,
+        vector_embedding_dimension=vector_embedding_dimension,
+        qdrant_collection_prefix=qdrant_collection_prefix,
+        phase9_cutover_read_source=phase9_cutover_read_source,
+        phase9_schema_freeze_enabled=phase9_schema_freeze_enabled,
+        phase9_rollback_enabled=phase9_rollback_enabled,
+        phase9_stability_window_days=phase9_stability_window_days,
+        phase9_shadow_traffic_enabled=phase9_shadow_traffic_enabled,
     )
+
+
+def create_vector_repository(
+    environ: Mapping[str, str] | None = None,
+    runtime_settings: AppRuntimeSettings | None = None,
+):
+    settings = runtime_settings or load_runtime_settings(environ)
+    source = environ if environ is not None else os.environ
+    if settings.vector_repository_backend == "qdrant":
+        return QdrantVectorRepository(
+            url=source.get("QDRANT_URL", "").strip(),
+            api_key=source.get("QDRANT_API_KEY", "").strip(),
+            collection_prefix=settings.qdrant_collection_prefix,
+            embedding_provider=HashingEmbeddingProvider(settings.vector_embedding_dimension),
+        )
+    sqlite_path = source.get("JOB_REPOSITORY_SQLITE_PATH", "").strip() or str(Path.cwd() / "data" / "jobs.db")
+    from infrastructure.persistence.sqlite_repositories import SQLiteVectorRepository
+
+    return SQLiteVectorRepository(sqlite_path)
 
 
 def create_media_storage(
@@ -278,6 +359,26 @@ def _read_non_negative_int(source: Mapping[str, str], key: str, default: int = 0
     if value < 0:
         raise RuntimeError(f"{key} must be a non-negative integer.")
     return value
+
+
+def _read_non_negative_float(source: Mapping[str, str], key: str, default: float = 0.0) -> float:
+    raw_value = source.get(key, "").strip()
+    if not raw_value:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise RuntimeError(f"{key} must be a non-negative number.") from exc
+    if value < 0:
+        raise RuntimeError(f"{key} must be a non-negative number.")
+    return value
+
+
+def _read_bool(source: Mapping[str, str], key: str, default: bool = False) -> bool:
+    raw_value = source.get(key, "").strip().lower()
+    if not raw_value:
+        return default
+    return raw_value in {"1", "true", "yes", "on"}
 
 
 def create_job_repository(
@@ -388,6 +489,7 @@ def create_phase6_async_pipeline_services(
     producer_backend_factory=None,
     workflow_services: Phase4WorkflowServices | None = None,
     artifact_repository=None,
+    vector_repository=None,
 ) -> tuple[AsyncPipelineCommandService, PipelineStageWorker] | None:
     settings = runtime_settings or load_runtime_settings(environ)
     if not settings.phase6_async_pipeline_enabled:
@@ -408,6 +510,7 @@ def create_phase6_async_pipeline_services(
             producer_backend_factory=producer_backend_factory,
             workflow_services=workflow_services,
             artifact_repository=artifact_repository,
+            vector_repository=vector_repository,
             final_artifact_retention_days=settings.artifact_final_retention_days,
         ).as_mapping()
     worker = PipelineStageWorker(

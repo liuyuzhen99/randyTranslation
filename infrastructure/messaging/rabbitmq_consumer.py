@@ -17,6 +17,8 @@ class RabbitMQWorkerConfig:
     queue_name: str
     prefetch_count: int = 1
     max_messages: int | None = None
+    heartbeat_seconds: int = 3600
+    blocked_connection_timeout_seconds: int = 3600
     topology: PipelineQueueTopology = PipelineQueueTopology()
 
 
@@ -73,7 +75,11 @@ class RabbitMQWorkerConsumer:
             )
         except Exception:
             logger.exception("Worker failed before it could persist retry/DLQ outcome")
-            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            try:
+                if getattr(channel, "is_open", True):
+                    channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            except Exception:
+                logger.exception("Failed to nack pipeline message because RabbitMQ channel is closed")
         finally:
             self._processed += 1
             if self.config.max_messages is not None and self._processed >= self.config.max_messages:
@@ -87,4 +93,7 @@ class RabbitMQWorkerConsumer:
                 "RabbitMQ worker consumption requires pika. Install requirements before enabling Phase 6."
             ) from exc
 
-        return pika.BlockingConnection(pika.URLParameters(self.config.url))
+        parameters = pika.URLParameters(self.config.url)
+        parameters.heartbeat = self.config.heartbeat_seconds
+        parameters.blocked_connection_timeout = self.config.blocked_connection_timeout_seconds
+        return pika.BlockingConnection(parameters)
