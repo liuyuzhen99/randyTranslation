@@ -11,10 +11,15 @@ from domain.time_utils import utc_now
 class EntitySnapshot:
     entity: str
     keys: set[str]
+    payloads: dict[str, dict] = field(default_factory=dict, compare=False, hash=False)
 
     @classmethod
     def from_iterable(cls, entity: str, keys) -> "EntitySnapshot":
         return cls(entity=entity, keys={str(key) for key in keys})
+
+    @classmethod
+    def from_records(cls, entity: str, records: dict[str, dict]) -> "EntitySnapshot":
+        return cls(entity=entity, keys=set(records.keys()), payloads=records)
 
 
 @dataclass(frozen=True)
@@ -24,10 +29,11 @@ class EntityParityReport:
     target_count: int
     missing_in_target: list[str] = field(default_factory=list)
     extra_in_target: list[str] = field(default_factory=list)
+    field_mismatches: list[dict] = field(default_factory=list, compare=False, hash=False)
 
     @property
     def is_consistent(self) -> bool:
-        return not self.missing_in_target and not self.extra_in_target
+        return not self.missing_in_target and not self.extra_in_target and not self.field_mismatches
 
     def to_dict(self) -> dict:
         return {
@@ -36,6 +42,7 @@ class EntityParityReport:
             "target_count": self.target_count,
             "missing_in_target": self.missing_in_target,
             "extra_in_target": self.extra_in_target,
+            "field_mismatches": self.field_mismatches,
             "is_consistent": self.is_consistent,
         }
 
@@ -71,6 +78,7 @@ class Phase9ReconciliationService:
             target = target_snapshots.get(entity_name, EntitySnapshot(entity_name, set()))
             missing = sorted(legacy.keys - target.keys)
             extra = sorted(target.keys - legacy.keys)
+            field_mismatches = self._compare_payloads(legacy, target)
             reports.append(
                 EntityParityReport(
                     entity=entity_name,
@@ -78,9 +86,35 @@ class Phase9ReconciliationService:
                     target_count=len(target.keys),
                     missing_in_target=missing,
                     extra_in_target=extra,
+                    field_mismatches=field_mismatches,
                 )
             )
         return Phase9ParityReport(generated_at=utc_now().isoformat(), entities=reports)
+
+    @staticmethod
+    def _compare_payloads(
+        legacy: EntitySnapshot,
+        target: EntitySnapshot,
+    ) -> list[dict]:
+        if not legacy.payloads and not target.payloads:
+            return []
+        common_keys = legacy.keys & target.keys
+        mismatches: list[dict] = []
+        for key in sorted(common_keys):
+            legacy_payload = legacy.payloads.get(key, {})
+            target_payload = target.payloads.get(key, {})
+            all_fields = set(legacy_payload) | set(target_payload)
+            for field_name in sorted(all_fields):
+                legacy_val = legacy_payload.get(field_name)
+                target_val = target_payload.get(field_name)
+                if legacy_val != target_val:
+                    mismatches.append({
+                        "key": key,
+                        "field": field_name,
+                        "legacy": legacy_val,
+                        "target": target_val,
+                    })
+        return mismatches
 
 
 @dataclass(frozen=True)

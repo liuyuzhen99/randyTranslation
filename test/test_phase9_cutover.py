@@ -41,6 +41,59 @@ class Phase9CutoverTests(unittest.TestCase):
         self.assertEqual(by_entity["videos"]["missing_in_target"], ["v1"])
         self.assertEqual(by_entity["reviews"]["extra_in_target"], ["r1"])
 
+    def test_reconciliation_reports_field_level_mismatches(self):
+        report = Phase9ReconciliationService().compare_snapshots(
+            legacy_snapshots={
+                "jobs": EntitySnapshot.from_records("jobs", {
+                    "j1": {"status": "done", "result": "s3://bucket/v1.mp4"},
+                    "j2": {"status": "failed", "result": None},
+                }),
+            },
+            target_snapshots={
+                "jobs": EntitySnapshot.from_records("jobs", {
+                    "j1": {"status": "done", "result": "s3://bucket/v1.mp4"},
+                    "j2": {"status": "done", "result": "s3://bucket/v2.mp4"},
+                }),
+            },
+        )
+
+        payload = report.to_dict()
+        jobs_report = next(e for e in payload["entities"] if e["entity"] == "jobs")
+        self.assertFalse(report.is_consistent)
+        self.assertEqual(len(jobs_report["field_mismatches"]), 2)
+        mismatch_by_field = {m["field"]: m for m in jobs_report["field_mismatches"]}
+        self.assertEqual(mismatch_by_field["result"]["key"], "j2")
+        self.assertIsNone(mismatch_by_field["result"]["legacy"])
+        self.assertEqual(mismatch_by_field["result"]["target"], "s3://bucket/v2.mp4")
+        self.assertEqual(mismatch_by_field["status"]["legacy"], "failed")
+        self.assertEqual(mismatch_by_field["status"]["target"], "done")
+
+    def test_reconciliation_no_field_mismatches_when_payloads_match(self):
+        report = Phase9ReconciliationService().compare_snapshots(
+            legacy_snapshots={
+                "artists": EntitySnapshot.from_records("artists", {
+                    "a1": {"name": "Kendrick", "followers": 1000},
+                }),
+            },
+            target_snapshots={
+                "artists": EntitySnapshot.from_records("artists", {
+                    "a1": {"name": "Kendrick", "followers": 1000},
+                }),
+            },
+        )
+        self.assertTrue(report.is_consistent)
+        artists_report = next(e for e in report.to_dict()["entities"] if e["entity"] == "artists")
+        self.assertEqual(artists_report["field_mismatches"], [])
+
+    def test_from_iterable_snapshots_have_no_payloads_and_skip_field_comparison(self):
+        report = Phase9ReconciliationService().compare_snapshots(
+            legacy_snapshots={"jobs": EntitySnapshot.from_iterable("jobs", ["j1", "j2"])},
+            target_snapshots={"jobs": EntitySnapshot.from_iterable("jobs", ["j1", "j2"])},
+        )
+        self.assertTrue(report.is_consistent)
+        jobs_report = next(e for e in report.to_dict()["entities"] if e["entity"] == "jobs")
+        self.assertEqual(jobs_report["field_mismatches"], [])
+
     def test_shadow_traffic_validator_compares_normalized_outputs(self):
         report = Phase9ShadowTrafficValidator().compare(
             cases={

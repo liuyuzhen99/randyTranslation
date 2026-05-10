@@ -52,10 +52,15 @@ def main() -> int:
 
 def _load_snapshots(path: str) -> dict[str, EntitySnapshot]:
     payload = _load_json(path)
-    return {
-        entity: EntitySnapshot.from_iterable(entity, keys)
-        for entity, keys in payload.items()
-    }
+    result: dict[str, EntitySnapshot] = {}
+    for entity, value in payload.items():
+        if isinstance(value, dict):
+            # Record format: {"jobs": {"job-1": {"status": "done", ...}, ...}}
+            result[entity] = EntitySnapshot.from_records(entity, value)
+        else:
+            # Key-list format: {"jobs": ["job-1", "job-2"]}
+            result[entity] = EntitySnapshot.from_iterable(entity, value)
+    return result
 
 
 def _load_shadow_report(path: str) -> Phase9ShadowTrafficReport:
