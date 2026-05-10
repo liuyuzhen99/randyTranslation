@@ -13,6 +13,7 @@ class JobService:
     def __init__(self, job_repository: JobRepository, shadow_write_service=None) -> None:
         self.job_repository = job_repository
         self.shadow_write_service = shadow_write_service
+        self.shadow_write_degraded: bool = False
 
     def create_job(self, song_name: str) -> Job:
         task_id = str(uuid.uuid4())[:8]
@@ -21,8 +22,15 @@ class JobService:
         if self.shadow_write_service is not None:
             try:
                 self.shadow_write_service.record_job_created(job)
-            except Exception:
-                logger.exception("Phase 2 shadow-write failed during job creation for %s", task_id)
+                self.shadow_write_degraded = False
+            except Exception as exc:
+                self.shadow_write_degraded = True
+                logger.error(
+                    "event=shadow_write_failure op=job_created job_id=%s error=%s",
+                    task_id,
+                    exc,
+                    exc_info=True,
+                )
         return job
 
     def get_job(self, task_id: str) -> Job | None:

@@ -57,3 +57,8 @@ def get_session_factory(request: Request):
 
 def get_runtime_settings(request: Request):
     return request.app.state.runtime_settings
+
+
+def get_shadow_write_degraded(request: Request) -> bool:
+    job_service = request.app.state.job_service
+    return getattr(job_service, "shadow_write_degraded", False)

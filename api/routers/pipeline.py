@@ -12,6 +12,7 @@ from api.dependencies import (
     get_phase4_workflow_services,
     get_phase6_async_pipeline_services,
     get_session_factory,
+    get_shadow_write_degraded,
 )
 from api.service import (
     CandidatePipelineResponse,
@@ -406,6 +407,7 @@ async def list_pipeline(
     job_service=Depends(get_job_service),
     phase4_services=Depends(get_phase4_workflow_services),
     session_factory=Depends(get_session_factory),
+    shadow_write_degraded: bool = Depends(get_shadow_write_degraded),
 ):
     if phase4_services is None:
         raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
@@ -426,23 +428,32 @@ async def list_pipeline(
         if pipeline_activity is not None:
             item["pipeline_activity"] = pipeline_activity
     total = len(items)
+    meta = {"generated_at": utc_now().isoformat(), "update_mode": "polling", "refresh_hint_seconds": 15}
+    if shadow_write_degraded:
+        meta["shadow_write_degraded"] = True
     return {
         "items": items,
         "pagination": {"page": 1, "page_size": total or 1, "total": total, "total_pages": 1},
-        "meta": {"generated_at": utc_now().isoformat(), "update_mode": "polling", "refresh_hint_seconds": 15},
+        "meta": meta,
     }
 
 
 @router.get("/v1/library")
-async def list_library(phase4_services=Depends(get_phase4_workflow_services)):
+async def list_library(
+    phase4_services=Depends(get_phase4_workflow_services),
+    shadow_write_degraded: bool = Depends(get_shadow_write_degraded),
+):
     if phase4_services is None:
         raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
     items = phase4_services.library_service.list_library()
     total = len(items)
+    meta = {"generated_at": utc_now().isoformat(), "update_mode": "polling", "refresh_hint_seconds": 15}
+    if shadow_write_degraded:
+        meta["shadow_write_degraded"] = True
     return {
         "items": items,
         "pagination": {"page": 1, "page_size": total or 1, "total": total, "total_pages": 1},
-        "meta": {"generated_at": utc_now().isoformat(), "update_mode": "polling", "refresh_hint_seconds": 15},
+        "meta": meta,
     }
 
 
