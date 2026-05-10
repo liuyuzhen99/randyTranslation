@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 from threading import Event, Thread
 import time
-from typing import Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
 
 from application.services.phase7_tracing import phase7_span
 from domain.entities import Job, OutboxEvent, PipelineStageExecution
@@ -16,6 +16,9 @@ from domain.message_contracts import PipelineStageMessage, ReviewContext
 from domain.queue_topology import PipelineQueueTopology, next_stage
 from domain.repositories import JobRepository, OutboxRepository, PipelineStageExecutionRepository
 from domain.time_utils import utc_now
+
+if TYPE_CHECKING:
+    from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemySessionFactory, SQLAlchemyOutboxRepository, SQLAlchemyPipelineStageExecutionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -140,12 +143,14 @@ class PipelineStageWorker:
         command_service: AsyncPipelineCommandService,
         handlers: dict[StageType, StageHandler] | None = None,
         backoff_base_seconds: int = 30,
+        session_factory: SQLAlchemySessionFactory | None = None,
     ) -> None:
         self.job_repository = job_repository
         self.execution_repository = execution_repository
         self.command_service = command_service
         self.handlers = handlers or {}
         self.backoff_base_seconds = backoff_base_seconds
+        self._session_factory = session_factory
 
     def handle_payload(self, payload: str) -> WorkerResult:
         message = PipelineStageMessage.from_payload(payload)
@@ -218,8 +223,10 @@ class PipelineStageWorker:
             result_payload=json.dumps({**message.payload, **(result_payload or {})}, ensure_ascii=False, sort_keys=True),
             updated_at=utc_now(),
         )
-        self.execution_repository.upsert(completed_execution)
-        self._enqueue_next_or_complete(message, result_payload or {})
+        self._atomic_upsert_and_enqueue(
+            completed_execution,
+            lambda: self._enqueue_next_or_complete(message, result_payload or {}),
+        )
         return WorkerResult(
             action="ack",
             job_id=message.job_id,
@@ -227,6 +234,42 @@ class PipelineStageWorker:
             dedupe_key=message.dedupe_key,
             attempt=message.retry.attempt,
         )
+
+    def _atomic_upsert_and_enqueue(
+        self,
+        execution: PipelineStageExecution,
+        enqueue_fn: Callable[[], None],
+    ) -> None:
+        """Upsert execution and add outbox message in one transaction when session_factory is available.
+
+        Falls back to separate calls when session_factory is not injected (e.g. in-memory tests).
+        The shared-session path requires both repositories to be SQLAlchemy-backed.
+        """
+        from infrastructure.persistence.sqlalchemy_repositories import (
+            SQLAlchemyOutboxRepository,
+            SQLAlchemyPipelineStageExecutionRepository,
+        )
+
+        if (
+            self._session_factory is not None
+            and isinstance(self.execution_repository, SQLAlchemyPipelineStageExecutionRepository)
+            and isinstance(self.command_service.outbox_repository, SQLAlchemyOutboxRepository)
+        ):
+            with self._session_factory.transactional() as session:
+                self.execution_repository.upsert_with_session(session, execution)
+                # Collect the outbox event by temporarily redirecting add_with_session
+                # We monkey-patch the outbox add to use the shared session for this call only.
+                orig_add = self.command_service.outbox_repository.add
+                try:
+                    self.command_service.outbox_repository.add = (
+                        lambda event: self.command_service.outbox_repository.add_with_session(session, event)
+                    )
+                    enqueue_fn()
+                finally:
+                    self.command_service.outbox_repository.add = orig_add
+        else:
+            self.execution_repository.upsert(execution)
+            enqueue_fn()
 
     def _run_handler(self, message: PipelineStageMessage) -> dict:
         handler = self.handlers.get(message.stage)
@@ -255,8 +298,10 @@ class PipelineStageWorker:
                 result_payload=failed_message.to_payload(),
                 updated_at=utc_now(),
             )
-            self.execution_repository.upsert(failed_execution)
-            self.command_service.enqueue_dlq(message, error=error)
+            self._atomic_upsert_and_enqueue(
+                failed_execution,
+                lambda: self.command_service.enqueue_dlq(message, error=error),
+            )
             self._mark_job_failed(message, error)
             return WorkerResult(
                 action="dlq",

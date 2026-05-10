@@ -519,6 +519,7 @@ def create_phase6_async_pipeline_services(
         command_service=command_service,
         handlers=handlers,
         backoff_base_seconds=settings.phase6_retry_backoff_base_seconds,
+        session_factory=active_session_factory,
     )
     return command_service, worker
 

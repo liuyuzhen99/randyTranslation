@@ -78,6 +78,19 @@ class SQLAlchemySessionFactory:
         finally:
             session.close()
 
+    @contextmanager
+    def transactional(self):
+        """Yield a session for use across multiple repository calls in one transaction."""
+        session: Session = self._sessionmaker()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
 
 class SQLAlchemyArtistRepository(ArtistRepository):
     def __init__(self, session_factory: SQLAlchemySessionFactory) -> None:
@@ -349,54 +362,61 @@ class SQLAlchemyPipelineStageExecutionRepository(PipelineStageExecutionRepositor
 
     def upsert(self, execution: PipelineStageExecution) -> None:
         with self.session_factory.session_scope() as session:
-            row = session.get(PipelineStageExecutionModel, execution.execution_id)
-            if row is None:
-                row = (
-                    session.execute(
-                        select(PipelineStageExecutionModel).where(
-                            PipelineStageExecutionModel.dedupe_key == execution.dedupe_key
-                        )
-                    )
-                    .scalars()
-                    .first()
-                )
+            self._upsert_with_session(session, execution)
 
-            if row is None:
-                session.add(
-                    PipelineStageExecutionModel(
-                        execution_id=execution.execution_id,
-                        dedupe_key=execution.dedupe_key,
-                        job_id=execution.job_id,
-                        stage=execution.stage,
-                        candidate_id=execution.candidate_id,
-                        status=execution.status,
-                        attempt=execution.attempt,
-                        max_attempts=execution.max_attempts,
-                        next_retry_at=execution.next_retry_at,
-                        locked_at=execution.locked_at,
-                        completed_at=execution.completed_at,
-                        error_message=execution.error_message,
-                        result_payload=execution.result_payload,
-                        trace_id=execution.trace_id,
-                        created_at=execution.created_at,
-                        updated_at=execution.updated_at,
+    def upsert_with_session(self, session, execution: PipelineStageExecution) -> None:
+        """Upsert using a caller-supplied session (for shared transactions)."""
+        self._upsert_with_session(session, execution)
+
+    def _upsert_with_session(self, session, execution: PipelineStageExecution) -> None:
+        row = session.get(PipelineStageExecutionModel, execution.execution_id)
+        if row is None:
+            row = (
+                session.execute(
+                    select(PipelineStageExecutionModel).where(
+                        PipelineStageExecutionModel.dedupe_key == execution.dedupe_key
                     )
                 )
-                return
+                .scalars()
+                .first()
+            )
 
-            row.job_id = execution.job_id
-            row.stage = execution.stage
-            row.candidate_id = execution.candidate_id
-            row.status = execution.status
-            row.attempt = execution.attempt
-            row.max_attempts = execution.max_attempts
-            row.next_retry_at = execution.next_retry_at
-            row.locked_at = execution.locked_at
-            row.completed_at = execution.completed_at
-            row.error_message = execution.error_message
-            row.result_payload = execution.result_payload
-            row.trace_id = execution.trace_id
-            row.updated_at = execution.updated_at
+        if row is None:
+            session.add(
+                PipelineStageExecutionModel(
+                    execution_id=execution.execution_id,
+                    dedupe_key=execution.dedupe_key,
+                    job_id=execution.job_id,
+                    stage=execution.stage,
+                    candidate_id=execution.candidate_id,
+                    status=execution.status,
+                    attempt=execution.attempt,
+                    max_attempts=execution.max_attempts,
+                    next_retry_at=execution.next_retry_at,
+                    locked_at=execution.locked_at,
+                    completed_at=execution.completed_at,
+                    error_message=execution.error_message,
+                    result_payload=execution.result_payload,
+                    trace_id=execution.trace_id,
+                    created_at=execution.created_at,
+                    updated_at=execution.updated_at,
+                )
+            )
+            return
+
+        row.job_id = execution.job_id
+        row.stage = execution.stage
+        row.candidate_id = execution.candidate_id
+        row.status = execution.status
+        row.attempt = execution.attempt
+        row.max_attempts = execution.max_attempts
+        row.next_retry_at = execution.next_retry_at
+        row.locked_at = execution.locked_at
+        row.completed_at = execution.completed_at
+        row.error_message = execution.error_message
+        row.result_payload = execution.result_payload
+        row.trace_id = execution.trace_id
+        row.updated_at = execution.updated_at
 
     def get_by_dedupe_key(self, dedupe_key: str) -> PipelineStageExecution | None:
         with self.session_factory.session_scope() as session:
@@ -908,28 +928,40 @@ class SQLAlchemyArtifactRepository(ArtifactRepository):
 class SQLAlchemyOutboxRepository(OutboxRepository):
     def __init__(self, session_factory: SQLAlchemySessionFactory) -> None:
         self.session_factory = session_factory
+        self._is_postgres = session_factory.engine.dialect.name == "postgresql"
 
     def add(self, event: OutboxEvent) -> None:
         with self.session_factory.session_scope() as session:
-            session.add(
-                OutboxModel(
-                    event_id=event.event_id,
-                    topic=event.topic,
-                    payload=event.payload,
-                    status=event.status,
-                    aggregate_id=event.aggregate_id,
-                    dedupe_key=event.dedupe_key,
-                    correlation_id=event.correlation_id,
-                )
+            self._add_with_session(session, event)
+
+    def add_with_session(self, session, event: OutboxEvent) -> None:
+        """Add using a caller-supplied session (for shared transactions)."""
+        self._add_with_session(session, event)
+
+    def _add_with_session(self, session, event: OutboxEvent) -> None:
+        session.add(
+            OutboxModel(
+                event_id=event.event_id,
+                topic=event.topic,
+                payload=event.payload,
+                status=event.status,
+                aggregate_id=event.aggregate_id,
+                dedupe_key=event.dedupe_key,
+                correlation_id=event.correlation_id,
             )
+        )
 
     def list_pending(self) -> list[OutboxEvent]:
         with self.session_factory.session_scope() as session:
-            rows = (
-                session.execute(select(OutboxModel).where(OutboxModel.status == "pending"))
-                .scalars()
-                .all()
+            stmt = (
+                select(OutboxModel)
+                .where(OutboxModel.status == "pending")
+                .order_by(OutboxModel.event_id.asc())
+                .limit(50)
             )
+            if self._is_postgres:
+                stmt = stmt.with_for_update(skip_locked=True)
+            rows = session.execute(stmt).scalars().all()
             return [self._to_entity(row) for row in rows]
 
     def get(self, event_id: str) -> OutboxEvent | None:

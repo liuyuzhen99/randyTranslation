@@ -704,6 +704,7 @@ def create_app(outbox_publisher=None, phase3_providers=None) -> FastAPI:
         record_pipeline_job(candidate.candidate_id, job.job_id, actor_id, mode="phase6_unavailable")
         return job.job_id, "候选视频已加入 pipeline，但 Phase 6 async 未启用，尚未开始提取 transcript"
 
+    # 展示pipeline详情中的日志，后续可升级为websocket
     def serialize_pipeline_activity(candidate_id: str) -> dict | None:
         job_id = get_latest_candidate_job_id(candidate_id, "pipeline_job_queued")
         executions = []
