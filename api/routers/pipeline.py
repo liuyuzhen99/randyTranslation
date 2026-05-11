@@ -281,7 +281,8 @@ async def check_status(
     job = job_service.get_job(task_id)
     if job is None:
         system_logger.warning(f"查询了不存在的任务ID: {task_id}")
-        raise HTTPException(status_code=404, detail="任务不存在")
+        from domain.exceptions import NotFoundError
+        raise NotFoundError("job", task_id)
     return job.to_api_dict()
 
 

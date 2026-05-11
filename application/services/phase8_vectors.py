@@ -204,6 +204,27 @@ class OpenAIEmbeddingProvider:
         return response.data[0].embedding
 
 
+class BGEEmbeddingProvider:
+    """Local open-source embedding using BAAI/bge-m3 (1024-dim, MIT license).
+
+    Bilingual (ZH+EN) SOTA — suited for translation memory and music taste retrieval.
+    Import is deferred to avoid startup cost when using HashingEmbeddingProvider.
+    """
+
+    MODEL = "BAAI/bge-m3"
+    dimension = 1024
+
+    def __init__(self, model: str = MODEL) -> None:
+        from sentence_transformers import SentenceTransformer
+        self._model = SentenceTransformer(model)
+
+    def embed(self, text: str) -> list[float]:
+        return self._model.encode(
+            text.strip() or "empty",
+            normalize_embeddings=True,
+        ).tolist()
+
+
 def _tokenize(text: str) -> list[str]:
     normalized = []
     current = []

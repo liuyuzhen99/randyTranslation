@@ -508,6 +508,15 @@ def create_app(outbox_publisher=None, phase3_providers=None) -> FastAPI:
             return "/v1/pipeline"
         return None
 
+    from domain.exceptions import NotFoundError
+
+    @app_instance.exception_handler(NotFoundError)
+    async def not_found_handler(request: Request, exc: NotFoundError):
+        return JSONResponse(
+            status_code=404,
+            content={"code": "not_found", "resource": exc.resource, "id": exc.id},
+        )
+
     @app_instance.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
         if request.url.path.startswith("/v1/"):

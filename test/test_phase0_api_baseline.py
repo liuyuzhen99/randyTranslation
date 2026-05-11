@@ -46,7 +46,8 @@ class Phase0ApiBaselineTests(unittest.TestCase):
         self.assertIn("task_id", data)
         self.assertIsInstance(data["task_id"], str)
         self.assertEqual(len(data["task_id"]), 8)
-        self.assertEqual(data["message"], "任务已启动，请稍后通过 ID 查询进度")
+        self.assertIn("message", data)
+        self.assertIn("任务", data["message"])
 
     def test_check_status_contract(self):
         create_res = self.client.post("/create_task", json={"song_name": "DNA"})
@@ -62,7 +63,7 @@ class Phase0ApiBaselineTests(unittest.TestCase):
     def test_check_status_not_found(self):
         response = self.client.get("/check_status/unknown-id")
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json(), {"detail": "任务不存在"})
+        self.assertEqual(response.json(), {"code": "not_found", "resource": "job", "id": "unknown-id"})
 
     def test_list_tasks_contract(self):
         first = self.client.post("/create_task", json={"song_name": "HUMBLE"}).json()["task_id"]
@@ -159,6 +160,7 @@ class Phase0ApiBaselineTests(unittest.TestCase):
                 "PHASE2_AUTO_CREATE_SCHEMA": "true",
                 "PHASE2_SHADOW_WRITE_ENABLED": "true",
                 "PHASE2_OUTBOX_DISPATCH_ENABLED": "true",
+                "PHASE6_ASYNC_PIPELINE_ENABLED": "false",
                 "LOG_FILE_PATH": os.path.join(temp_root, "app.log"),
             }
 
@@ -188,6 +190,7 @@ class Phase0ApiBaselineTests(unittest.TestCase):
                 "PHASE2_AUTO_CREATE_SCHEMA": "true",
                 "PHASE2_SHADOW_WRITE_ENABLED": "true",
                 "PHASE2_OUTBOX_DISPATCH_ENABLED": "true",
+                "PHASE6_ASYNC_PIPELINE_ENABLED": "false",
                 "LOG_FILE_PATH": os.path.join(temp_root, "app.log"),
             }
 

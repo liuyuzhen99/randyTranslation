@@ -57,7 +57,7 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         self.assertEqual(settings.phase6_max_stage_attempts, 3)
         self.assertEqual(settings.phase6_retry_backoff_base_seconds, 30)
         self.assertEqual(settings.vector_repository_backend, "sqlite")
-        self.assertEqual(settings.vector_embedding_dimension, 384)
+        self.assertEqual(settings.vector_embedding_dimension, 1024)
         self.assertEqual(settings.qdrant_collection_prefix, "")
         self.assertEqual(settings.phase9_cutover_read_source, "legacy")
         self.assertFalse(settings.phase9_schema_freeze_enabled)

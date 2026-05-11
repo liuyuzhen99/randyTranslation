@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated
 
 from dotenv import load_dotenv
+from pydantic import field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from application.services.outbox_dispatcher import OutboxDispatcher
 from application.services.async_pipeline import AsyncPipelineCommandService, PipelineStageWorker
@@ -126,11 +128,24 @@ def validate_startup_env(environ: Mapping[str, str] | None = None) -> None:
         )
 
 
-@dataclass(frozen=True)
-class AppRuntimeSettings:
+class AppRuntimeSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+        env_ignore_empty=True,
+    )
+
     job_repository_backend: str = "memory"
     job_repository_sqlite_path: str = ""
     database_url: str = ""
+    # POSTGRES_* components for assembling DATABASE_URL (consumed by model_validator)
+    postgres_host: str = ""
+    postgres_port: str = "5432"
+    postgres_db: str = ""
+    postgres_user: str = ""
+    postgres_password: str = ""
     phase2_shadow_write_enabled: bool = False
     phase2_auto_create_schema: bool = False
     phase2_reconcile_enabled: bool = False
@@ -149,7 +164,7 @@ class AppRuntimeSettings:
     artifact_temp_retention_days: int = 1
     artifact_final_retention_days: int = 0
     vector_repository_backend: str = "sqlite"
-    vector_embedding_dimension: int = 384
+    vector_embedding_dimension: int = 1024
     qdrant_collection_prefix: str = ""
     phase9_cutover_read_source: str = "legacy"
     phase9_schema_freeze_enabled: bool = False
@@ -157,154 +172,118 @@ class AppRuntimeSettings:
     phase9_stability_window_days: int = 7
     phase9_shadow_traffic_enabled: bool = False
 
+    @field_validator("job_repository_backend", mode="before")
+    @classmethod
+    def _validate_job_backend(cls, v: str) -> str:
+        val = (v or "memory").strip().lower()
+        if val not in {"memory", "sqlite", "sqlalchemy"}:
+            raise RuntimeError(
+                "Invalid JOB_REPOSITORY_BACKEND. Expected one of: memory, sqlite, sqlalchemy."
+            )
+        return val
+
+    @field_validator("media_storage_backend", mode="before")
+    @classmethod
+    def _validate_media_backend(cls, v: str) -> str:
+        val = (v or "local").strip().lower()
+        if val not in {"local", "cos"}:
+            raise RuntimeError("Invalid MEDIA_STORAGE_BACKEND. Expected one of: local, cos.")
+        return val
+
+    @field_validator("vector_repository_backend", mode="before")
+    @classmethod
+    def _validate_vector_backend(cls, v: str) -> str:
+        val = (v or "sqlite").strip().lower()
+        if val not in {"sqlite", "qdrant"}:
+            raise RuntimeError(
+                "Invalid VECTOR_REPOSITORY_BACKEND. Expected one of: sqlite, qdrant."
+            )
+        return val
+
+    @field_validator("vector_embedding_dimension", mode="before")
+    @classmethod
+    def _validate_vector_dimension(cls, v) -> int:
+        val = int(v) if isinstance(v, str) else v
+        if val < 8:
+            raise RuntimeError("VECTOR_EMBEDDING_DIMENSION must be at least 8.")
+        return val
+
+    @field_validator("phase6_max_stage_attempts", mode="before")
+    @classmethod
+    def _validate_max_stage_attempts(cls, v) -> int:
+        val = int(v) if isinstance(v, str) else v
+        if val < 1:
+            raise RuntimeError("PHASE6_MAX_STAGE_ATTEMPTS must be at least 1.")
+        return val
+
+    @field_validator("phase2_reconcile_max_missing_jobs", "phase2_reconcile_max_job_field_mismatches",
+                     "phase2_reconcile_max_invalid_outbox_payloads", "phase2_reconcile_max_outbox_payload_mismatches",
+                     "phase6_retry_backoff_base_seconds", "artifact_temp_retention_days",
+                     "artifact_final_retention_days", "phase9_stability_window_days", mode="before")
+    @classmethod
+    def _validate_non_negative_int(cls, v) -> int:
+        if v == "" or v is None:
+            return 0
+        val = int(v) if isinstance(v, str) else v
+        if val < 0:
+            raise RuntimeError(f"Value must be a non-negative integer, got {val}.")
+        return val
+
+    @field_validator("phase9_cutover_read_source", mode="before")
+    @classmethod
+    def _validate_phase9_read_source(cls, v: str) -> str:
+        val = (v or "legacy").strip().lower()
+        if val not in {"legacy", "postgres", "qdrant"}:
+            raise RuntimeError(
+                "Invalid PHASE9_CUTOVER_READ_SOURCE. Expected one of: legacy, postgres, qdrant."
+            )
+        return val
+
+    @field_validator("job_repository_sqlite_path", mode="after")
+    @classmethod
+    def _default_sqlite_path(cls, v: str, info) -> str:
+        if not v and info.data.get("job_repository_backend") == "sqlite":
+            return str(Path.cwd() / "data" / "jobs.db")
+        return v
+
+    @model_validator(mode="after")
+    def _assemble_database_url(self) -> "AppRuntimeSettings":
+        if not self.database_url:
+            host = self.postgres_host
+            db = self.postgres_db
+            user = self.postgres_user
+            password = self.postgres_password
+            port = self.postgres_port or "5432"
+            if host and db and user and password:
+                object.__setattr__(
+                    self,
+                    "database_url",
+                    f"postgresql+psycopg://{user}:{password}@{host}:{port}/{db}",
+                )
+        return self
+
 
 def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntimeSettings:
     if environ is None:
         load_dotenv(Path.cwd() / ".env", override=False)
-    source = environ if environ is not None else os.environ
-    backend = source.get("JOB_REPOSITORY_BACKEND", "memory").strip().lower() or "memory"
+        return AppRuntimeSettings()
+    # Tests inject a dict with uppercase env-var names.
+    # Build settings purely from that dict, bypassing os.environ and .env.
+    field_map = {k.lower(): v for k, v in environ.items()}
 
-    if backend not in {"memory", "sqlite", "sqlalchemy"}:
-        raise RuntimeError(
-            "Invalid JOB_REPOSITORY_BACKEND. Expected one of: memory, sqlite, sqlalchemy."
+    class _DictSettings(AppRuntimeSettings):
+        model_config = SettingsConfigDict(
+            env_file=None,
+            env_ignore_empty=True,
+            extra="ignore",
+            populate_by_name=True,
         )
 
-    sqlite_path = source.get("JOB_REPOSITORY_SQLITE_PATH", "").strip()
-    if backend == "sqlite" and not sqlite_path:
-        sqlite_path = str(Path.cwd() / "data" / "jobs.db")
-    database_url = source.get("DATABASE_URL", "").strip()
-    shadow_write_enabled = source.get("PHASE2_SHADOW_WRITE_ENABLED", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    auto_create_schema = source.get("PHASE2_AUTO_CREATE_SCHEMA", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    reconcile_enabled = source.get("PHASE2_RECONCILE_ENABLED", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    reconcile_report_path = source.get("PHASE2_RECONCILE_REPORT_PATH", "").strip()
-    reconcile_max_missing_jobs = _read_non_negative_int(
-        source,
-        "PHASE2_RECONCILE_MAX_MISSING_JOBS",
-    )
-    reconcile_max_job_field_mismatches = _read_non_negative_int(
-        source,
-        "PHASE2_RECONCILE_MAX_JOB_FIELD_MISMATCHES",
-    )
-    reconcile_max_invalid_outbox_payloads = _read_non_negative_int(
-        source,
-        "PHASE2_RECONCILE_MAX_INVALID_OUTBOX_PAYLOADS",
-    )
-    reconcile_max_outbox_payload_mismatches = _read_non_negative_int(
-        source,
-        "PHASE2_RECONCILE_MAX_OUTBOX_PAYLOAD_MISMATCHES",
-    )
-    outbox_dispatch_enabled = source.get("PHASE2_OUTBOX_DISPATCH_ENABLED", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    phase6_async_pipeline_enabled = source.get("PHASE6_ASYNC_PIPELINE_ENABLED", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    phase6_service_worker_enabled = _read_bool(source, "PHASE6_SERVICE_WORKER_ENABLED", default=True)
-    phase6_service_worker_poll_seconds = _read_non_negative_float(
-        source,
-        "PHASE6_SERVICE_WORKER_POLL_SECONDS",
-        default=1.0,
-    )
-    phase6_max_stage_attempts = _read_non_negative_int(source, "PHASE6_MAX_STAGE_ATTEMPTS", default=3)
-    if phase6_max_stage_attempts < 1:
-        raise RuntimeError("PHASE6_MAX_STAGE_ATTEMPTS must be at least 1.")
-    phase6_retry_backoff_base_seconds = _read_non_negative_int(
-        source,
-        "PHASE6_RETRY_BACKOFF_BASE_SECONDS",
-        default=30,
-    )
-    media_storage_backend = source.get("MEDIA_STORAGE_BACKEND", "local").strip().lower() or "local"
-    if media_storage_backend not in {"local", "cos"}:
-        raise RuntimeError("Invalid MEDIA_STORAGE_BACKEND. Expected one of: local, cos.")
-    artifact_temp_retention_days = _read_non_negative_int(source, "ARTIFACT_TEMP_RETENTION_DAYS", default=1)
-    artifact_final_retention_days = _read_non_negative_int(source, "ARTIFACT_FINAL_RETENTION_DAYS")
-    vector_repository_backend = source.get("VECTOR_REPOSITORY_BACKEND", "sqlite").strip().lower() or "sqlite"
-    if vector_repository_backend not in {"sqlite", "qdrant"}:
-        raise RuntimeError("Invalid VECTOR_REPOSITORY_BACKEND. Expected one of: sqlite, qdrant.")
-    vector_embedding_dimension = _read_non_negative_int(
-        source,
-        "VECTOR_EMBEDDING_DIMENSION",
-        default=384,
-    )
-    if vector_embedding_dimension < 8:
-        raise RuntimeError("VECTOR_EMBEDDING_DIMENSION must be at least 8.")
-    qdrant_collection_prefix = source.get("QDRANT_COLLECTION_PREFIX", "").strip()
-    phase9_cutover_read_source = source.get("PHASE9_CUTOVER_READ_SOURCE", "legacy").strip().lower() or "legacy"
-    if phase9_cutover_read_source not in {"legacy", "postgres", "qdrant"}:
-        raise RuntimeError(
-            "Invalid PHASE9_CUTOVER_READ_SOURCE. Expected one of: legacy, postgres, qdrant."
-        )
-    phase9_schema_freeze_enabled = _read_bool(source, "PHASE9_SCHEMA_FREEZE_ENABLED")
-    phase9_rollback_enabled = _read_bool(source, "PHASE9_ROLLBACK_ENABLED", default=True)
-    phase9_stability_window_days = _read_non_negative_int(
-        source,
-        "PHASE9_STABILITY_WINDOW_DAYS",
-        default=7,
-    )
-    phase9_shadow_traffic_enabled = _read_bool(source, "PHASE9_SHADOW_TRAFFIC_ENABLED")
-    if not database_url:
-        postgres_host = source.get("POSTGRES_HOST", "").strip()
-        postgres_port = source.get("POSTGRES_PORT", "").strip() or "5432"
-        postgres_db = source.get("POSTGRES_DB", "").strip()
-        postgres_user = source.get("POSTGRES_USER", "").strip()
-        postgres_password = source.get("POSTGRES_PASSWORD", "").strip()
-        if postgres_host and postgres_db and postgres_user and postgres_password:
-            database_url = (
-                f"postgresql+psycopg://{postgres_user}:{postgres_password}"
-                f"@{postgres_host}:{postgres_port}/{postgres_db}"
-            )
+        @classmethod
+        def settings_customise_sources(cls, settings_cls, init_settings, **kwargs):
+            return (init_settings,)
 
-    return AppRuntimeSettings(
-        job_repository_backend=backend,
-        job_repository_sqlite_path=sqlite_path,
-        database_url=database_url,
-        phase2_shadow_write_enabled=shadow_write_enabled,
-        phase2_auto_create_schema=auto_create_schema,
-        phase2_reconcile_enabled=reconcile_enabled,
-        phase2_reconcile_report_path=reconcile_report_path,
-        phase2_reconcile_max_missing_jobs=reconcile_max_missing_jobs,
-        phase2_reconcile_max_job_field_mismatches=reconcile_max_job_field_mismatches,
-        phase2_reconcile_max_invalid_outbox_payloads=reconcile_max_invalid_outbox_payloads,
-        phase2_reconcile_max_outbox_payload_mismatches=reconcile_max_outbox_payload_mismatches,
-        phase2_outbox_dispatch_enabled=outbox_dispatch_enabled,
-        phase6_async_pipeline_enabled=phase6_async_pipeline_enabled,
-        phase6_service_worker_enabled=phase6_service_worker_enabled,
-        phase6_service_worker_poll_seconds=phase6_service_worker_poll_seconds,
-        phase6_max_stage_attempts=phase6_max_stage_attempts,
-        phase6_retry_backoff_base_seconds=phase6_retry_backoff_base_seconds,
-        media_storage_backend=media_storage_backend,
-        artifact_temp_retention_days=artifact_temp_retention_days,
-        artifact_final_retention_days=artifact_final_retention_days,
-        vector_repository_backend=vector_repository_backend,
-        vector_embedding_dimension=vector_embedding_dimension,
-        qdrant_collection_prefix=qdrant_collection_prefix,
-        phase9_cutover_read_source=phase9_cutover_read_source,
-        phase9_schema_freeze_enabled=phase9_schema_freeze_enabled,
-        phase9_rollback_enabled=phase9_rollback_enabled,
-        phase9_stability_window_days=phase9_stability_window_days,
-        phase9_shadow_traffic_enabled=phase9_shadow_traffic_enabled,
-    )
+    return _DictSettings(**field_map)
 
 
 def create_vector_repository(
@@ -314,17 +293,8 @@ def create_vector_repository(
     settings = runtime_settings or load_runtime_settings(environ)
     source = environ if environ is not None else os.environ
     if settings.vector_repository_backend == "qdrant":
-        openai_api_key = source.get("OPENAI_API_KEY", "").strip()
-        if openai_api_key:
-            from application.services.phase8_vectors import OpenAIEmbeddingProvider
-            embedding_provider = OpenAIEmbeddingProvider(api_key=openai_api_key)
-        else:
-            import logging
-            logging.getLogger(__name__).warning(
-                "OPENAI_API_KEY not set — falling back to HashingEmbeddingProvider. "
-                "RAG semantic retrieval will not work correctly in production."
-            )
-            embedding_provider = HashingEmbeddingProvider(settings.vector_embedding_dimension)
+        from application.services.phase8_vectors import BGEEmbeddingProvider
+        embedding_provider = BGEEmbeddingProvider()
         return QdrantVectorRepository(
             url=source.get("QDRANT_URL", "").strip(),
             api_key=source.get("QDRANT_API_KEY", "").strip(),
@@ -358,40 +328,6 @@ def create_media_storage(
         output_root=source.get("MEDIA_OUTPUT_ROOT", "").strip() or None,
         bucket=source.get("S3_BUCKET", "").strip() or source.get("COS_BUCKET", "").strip() or None,
     )
-
-
-def _read_non_negative_int(source: Mapping[str, str], key: str, default: int = 0) -> int:
-    raw_value = source.get(key, "").strip()
-    if not raw_value:
-        return default
-    try:
-        value = int(raw_value)
-    except ValueError as exc:
-        raise RuntimeError(f"{key} must be a non-negative integer.") from exc
-    if value < 0:
-        raise RuntimeError(f"{key} must be a non-negative integer.")
-    return value
-
-
-def _read_non_negative_float(source: Mapping[str, str], key: str, default: float = 0.0) -> float:
-    raw_value = source.get(key, "").strip()
-    if not raw_value:
-        return default
-    try:
-        value = float(raw_value)
-    except ValueError as exc:
-        raise RuntimeError(f"{key} must be a non-negative number.") from exc
-    if value < 0:
-        raise RuntimeError(f"{key} must be a non-negative number.")
-    return value
-
-
-def _read_bool(source: Mapping[str, str], key: str, default: bool = False) -> bool:
-    raw_value = source.get(key, "").strip().lower()
-    if not raw_value:
-        return default
-    return raw_value in {"1", "true", "yes", "on"}
-
 
 def create_job_repository(
     environ: Mapping[str, str] | None = None,
