@@ -68,7 +68,7 @@ class OpenAIEmbeddingProvider:
 
 **为什么这样做**：`openai` 包已在 `requirements.txt`，零依赖成本。延迟 `import openai` 避免了在没有配置 API Key 的开发环境中报 import error。降级策略允许开发环境不配置 Key 也能启动，生产环境警告可被监控捕获。
 
-**未完成的运维操作**：Qdrant collection 维度从 384 → 1536 需要删除重建，这是破坏性运维操作（无法在线 migration），需要独立执行迁移 runbook（建新 collection → backfill → 验证质量 → 切流量 → 删旧 collection）。代码侧已就绪，运维侧待执行。
+**未完成的运维操作**：Qdrant collection 维度迁移需要删除重建，这是破坏性运维操作（无法在线 migration），需要独立执行迁移 runbook（确认 `collection_info` 维度 → 建新 1024-dim collection → backfill → 验证质量 → 切流量 → 删旧 collection）。若生产曾用 OpenAI 写入，旧 collection 通常是 1536-dim；若一直走 `HashingEmbeddingProvider` fallback，旧 collection 通常是 384-dim。两种情况切到 bge-m3（1024-dim）前都必须重建并重跑 `scripts/phase8_qdrant_backfill.py`。
 
 ---
 

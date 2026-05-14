@@ -6,9 +6,9 @@ import os
 from dataclasses import asdict
 
 from application.services.phase8_vectors import (
-    HashingEmbeddingProvider,
     Phase8RetrievalQualityEvaluator,
     RetrievalQualityCase,
+    build_embedding_provider,
 )
 from infrastructure.persistence.sqlite_repositories import SQLiteVectorRepository
 from infrastructure.vector.qdrant_repository import QdrantVectorRepository
@@ -22,7 +22,8 @@ def main() -> int:
     parser.add_argument("--qdrant-url", default=os.getenv("QDRANT_URL", ""))
     parser.add_argument("--qdrant-api-key", default=os.getenv("QDRANT_API_KEY", ""))
     parser.add_argument("--collection-prefix", default=os.getenv("QDRANT_COLLECTION_PREFIX", ""))
-    parser.add_argument("--embedding-dimension", type=int, default=int(os.getenv("VECTOR_EMBEDDING_DIMENSION", "384")))
+    parser.add_argument("--embedding-provider", default=os.getenv("VECTOR_EMBEDDING_PROVIDER", "bge"))
+    parser.add_argument("--embedding-dimension", type=int, default=int(os.getenv("VECTOR_EMBEDDING_DIMENSION", "1024")))
     args = parser.parse_args()
 
     repository = _build_repository(args)
@@ -44,7 +45,10 @@ def _build_repository(args):
         url=args.qdrant_url,
         api_key=args.qdrant_api_key,
         collection_prefix=args.collection_prefix,
-        embedding_provider=HashingEmbeddingProvider(args.embedding_dimension),
+        embedding_provider=build_embedding_provider(
+            args.embedding_provider,
+            dimension=args.embedding_dimension,
+        ),
     )
 
 

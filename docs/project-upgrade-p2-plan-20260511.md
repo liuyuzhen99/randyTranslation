@@ -246,7 +246,7 @@ raise NotFoundError("job", task_id)
 - 支持 8192 token 长文本，适合完整歌词片段
 - 维度 1024，语义空间足够丰富，对 music taste 风格相似度检索效果更好
 
-**⚠️ 维度变更注意**：当前 `VECTOR_EMBEDDING_DIMENSION` 默认值 384，但 `OpenAIEmbeddingProvider.dimension = 1536`。若生产 Qdrant collection 使用了 OpenAI 写入 1536-dim 数据，切换到 bge-m3（1024-dim）前必须重建 collection 并 backfill。执行前通过 Qdrant dashboard 确认当前 collection 实际维度。
+**⚠️ 维度变更注意**：切换到 bge-m3（1024-dim）前必须通过 Qdrant dashboard/API 的 `collection_info` 确认当前 collection 实际维度。若生产 Qdrant 曾用 OpenAI 写入数据，当前维度通常是 1536，必须重建 collection 并用 `scripts/phase8_qdrant_backfill.py` 重跑 backfill。若生产一直走 `HashingEmbeddingProvider` fallback，当前维度通常是 384，也必须重建为 1024 后再 backfill。只有已确认 collection 维度为 1024 时，才允许跳过维度重建。
 
 **改动文件**：
 - `application/services/phase8_vectors.py` — 新增 `BGEEmbeddingProvider` 类
@@ -261,21 +261,22 @@ class BGEEmbeddingProvider:
     """Local open-source embedding using BAAI/bge-m3 (1024-dim, MIT license).
 
     Bilingual (ZH+EN) SOTA, suited for translation memory and music taste retrieval.
-    Import is deferred to avoid startup cost when using HashingEmbeddingProvider.
+    Imports are deferred to avoid startup cost when using HashingEmbeddingProvider.
     """
 
     MODEL = "BAAI/bge-m3"
     dimension = 1024
 
     def __init__(self, model: str = MODEL) -> None:
-        from sentence_transformers import SentenceTransformer
-        self._model = SentenceTransformer(model)
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+        self._torch = torch
+        self._tokenizer = AutoTokenizer.from_pretrained(model)
+        self._model = AutoModel.from_pretrained(model)
+        self._model.eval()
 
     def embed(self, text: str) -> list[float]:
-        return self._model.encode(
-            text.strip() or "empty",
-            normalize_embeddings=True,
-        ).tolist()
+        ...
 ```
 
 2. `api/config.py` 的 `AppRuntimeSettings.vector_embedding_dimension` 默认值改为 `1024`

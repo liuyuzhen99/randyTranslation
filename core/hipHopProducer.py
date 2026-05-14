@@ -216,9 +216,20 @@ class HipHopAutoProject:
             ][:3],
         }
 
-    def generate_bilingual_srt(self, segments, english_texts, output_file: str):
-        logger.info("开始生成双语字幕: lines=%s output=%s", len(english_texts), output_file)
-        translations = self._translate_lines(english_texts)
+    def generate_bilingual_srt(
+        self,
+        segments,
+        english_texts,
+        output_file: str,
+        translation_references: list[dict] | None = None,
+    ):
+        logger.info(
+            "开始生成双语字幕: lines=%s output=%s references=%s",
+            len(english_texts),
+            output_file,
+            len(translation_references or []),
+        )
+        translations = self._translate_lines(english_texts, translation_references=translation_references)
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         with open(output_file, "w", encoding="utf-8") as file_obj:
             for index, segment in enumerate(segments, start=1):
@@ -378,7 +389,12 @@ class HipHopAutoProject:
             logger.warning("AI transcription review failed; keeping raw segments. error=%s", exc)
             return segments
 
-    def _translate_lines(self, english_texts: list[str]) -> list[str]:
+    def _translate_lines(
+        self,
+        english_texts: list[str],
+        *,
+        translation_references: list[dict] | None = None,
+    ) -> list[str]:
         logger.info("开始调用 AI 翻译歌词: lines=%s", len(english_texts))
         api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
         base_url = os.getenv("DEEPSEEK_BASE_URL", "").strip()
@@ -389,6 +405,7 @@ class HipHopAutoProject:
 
         client = OpenAI(api_key=api_key, base_url=base_url)
         anchored_block = self._prepare_anchored_lyrics(english_texts)
+        reference_block = self._format_translation_references(translation_references or [])
         prompt = f"""你是一个专业的 Hip-hop 中文翻译官，能够准确理解并翻译嘻哈、R&B音乐，准确且地道不突兀，十分吸引听众。请将以下歌词翻译成中文。
 
 要求：
@@ -407,6 +424,9 @@ class HipHopAutoProject:
 
 【参考示例】:
 {self._translation_fallback_examples()}
+
+【相似翻译记忆】:
+{reference_block}
 
 歌词列表：
 {anchored_block}
@@ -455,6 +475,30 @@ Example 3 (Slang & Social Critique):
 Input: <L3>How the fuck is it that so many cops are dirty? (Huh?)</L3>
 Output: <R3>怎么他妈有那么多黑条子？</R3>
 """
+
+    @staticmethod
+    def _format_translation_references(references: list[dict]) -> str:
+        if not references:
+            return "无相似翻译记忆。"
+        lines = []
+        for index, reference in enumerate(references[:3], start=1):
+            title = reference.get("title") or reference.get("artist") or "Unknown"
+            lyrics = reference.get("lyrics") or reference.get("text") or reference.get("document") or ""
+            translation = (
+                reference.get("translation")
+                or reference.get("zh_text")
+                or reference.get("chinese")
+                or reference.get("translated_text")
+                or ""
+            )
+            score = reference.get("score")
+            score_text = f" score={score:.4f}" if isinstance(score, (int, float)) else ""
+            lines.append(
+                f"{index}. 《{title}》{score_text}\n"
+                f"英文: {str(lyrics)[:300]}\n"
+                f"中文: {str(translation)[:300] if translation else '无中文译文，仅参考语气和语境'}"
+            )
+        return "\n".join(lines)
 
     def _review_translation_lines(self, english_texts: list[str], translations: list[str]) -> list[str]:
         api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()

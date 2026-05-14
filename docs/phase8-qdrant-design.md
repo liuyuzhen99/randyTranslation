@@ -41,7 +41,9 @@ The current implementation keeps metadata flexible because legacy translation an
 
 ## Embeddings
 
-The first implementation uses `HashingEmbeddingProvider` for deterministic local tests and migration drills. This is not the final production embedding model.
+The first implementation used `HashingEmbeddingProvider` for deterministic local tests and migration drills. That provider emitted 384-dimensional vectors by default and is not suitable for production semantic retrieval.
+
+The production target is now `BGEEmbeddingProvider` with `BAAI/bge-m3` and 1024-dimensional vectors. Qdrant collection dimensions are immutable for practical migration purposes, so switching providers requires validating the existing collection before any writes.
 
 Before cutover, choose and document the production embedding model and store at minimum:
 
@@ -49,6 +51,16 @@ Before cutover, choose and document the production embedding model and store at 
 - model/version
 - vector dimension
 - text normalization rules
+
+## Dimension Migration Guardrail
+
+Before switching production traffic to `BAAI/bge-m3`, confirm each Qdrant collection's `collection_info` vector size in the Qdrant dashboard or API:
+
+- If production Qdrant was written with OpenAI `text-embedding-3-small`, the existing size is 1536. Rebuild the collection and rerun `scripts/phase8_qdrant_backfill.py` before switching.
+- If production has always used fallback `HashingEmbeddingProvider`, the existing size is 384. Rebuild the collection as 1024-dimensional and rerun `scripts/phase8_qdrant_backfill.py`.
+- If the collection already reports 1024, no dimension rebuild is required, but backfill/parity and retrieval quality checks still need to pass.
+
+The Qdrant adapter rejects writes when an existing collection dimension does not match the configured embedding provider dimension. This is intentional: a dimension mismatch indicates stale collection data and must be resolved by collection rebuild plus backfill, not by mixed writes.
 
 ## Backfill Flow
 
@@ -59,7 +71,7 @@ Before cutover, choose and document the production embedding model and store at 
 5. Search back by source text and verify the migrated point is retrievable.
 6. Emit `VectorBackfillReport`.
 
-Dry-run mode reads the source and validates counts without requiring Qdrant.
+Dry-run mode reads the source and validates counts without requiring Qdrant. Live backfill defaults to 1024-dimensional embeddings unless `VECTOR_EMBEDDING_DIMENSION` or `--embedding-dimension` overrides it for an isolated drill.
 
 ## Quality Gate
 

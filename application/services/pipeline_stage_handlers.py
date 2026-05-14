@@ -147,8 +147,17 @@ class PipelineStageHandlers:
         english_texts = message.payload.get("english_texts") or [
             segment.get("text", "") for segment in segments
         ]
+        references = message.payload.get("translation_references") or self._search_translation_references(
+            message,
+            [str(text) for text in english_texts if str(text).strip()],
+        )
         srt_path = self.media_storage.resolve_temp_file(message.job_id, "bilingual.srt")
-        subtitle_file = backend.generate_bilingual_srt(segments, english_texts, output_file=srt_path)
+        subtitle_file = backend.generate_bilingual_srt(
+            segments,
+            english_texts,
+            output_file=srt_path,
+            translation_references=references,
+        )
         stage_logger.info("翻译完成，双语字幕已生成: %s", subtitle_file)
         candidate_id = message.review.candidate_id
         if candidate_id and self.workflow_services is not None:
@@ -163,7 +172,7 @@ class PipelineStageHandlers:
                 )
             except ReviewConflictError:
                 pass
-        return {"subtitle_file": subtitle_file}
+        return {"subtitle_file": subtitle_file, "translation_references": references}
 
     def translation_review_gate(self, message: PipelineStageMessage) -> dict:
         return self._review_gate(message, ReviewType.TRANSLATION_REVIEW, "translation_review_pending")
@@ -280,6 +289,34 @@ class PipelineStageHandlers:
             for record in records
         ]
         stage_logger.info("RAG 相似品味检索完成，返回 %s 条参考。", len(references))
+        return references
+
+    def _search_translation_references(self, message: PipelineStageMessage, english_texts: list[str]) -> list[dict]:
+        repository = getattr(self, "vector_repository", None)
+        if repository is None:
+            stage_logger.info("未配置 RAG 向量库，AI 翻译将不带相似翻译参考。")
+            return []
+        try:
+            from application.services.phase8_vectors import TRANSLATION_MEMORY
+
+            query = "\n".join(english_texts[:20]) or message.song_name
+            records = repository.search(TRANSLATION_MEMORY, query, limit=3)
+        except Exception as exc:
+            stage_logger.warning("RAG 相似翻译检索失败，继续无参考翻译: %s", exc)
+            return []
+        references = [
+            {
+                "title": record.metadata.get("title") or record.metadata.get("artist") or record.vector_id,
+                "lyrics": record.text,
+                "translation": record.metadata.get("translation")
+                or record.metadata.get("zh_text")
+                or record.metadata.get("chinese")
+                or "",
+                "score": record.score,
+            }
+            for record in records
+        ]
+        stage_logger.info("RAG 相似翻译检索完成，返回 %s 条参考。", len(references))
         return references
 
     @staticmethod

@@ -57,6 +57,7 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         self.assertEqual(settings.phase6_max_stage_attempts, 3)
         self.assertEqual(settings.phase6_retry_backoff_base_seconds, 30)
         self.assertEqual(settings.vector_repository_backend, "sqlite")
+        self.assertEqual(settings.vector_embedding_provider, "bge")
         self.assertEqual(settings.vector_embedding_dimension, 1024)
         self.assertEqual(settings.qdrant_collection_prefix, "")
         self.assertEqual(settings.phase9_cutover_read_source, "legacy")
@@ -139,14 +140,20 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         settings = load_runtime_settings(
             {
                 "VECTOR_REPOSITORY_BACKEND": "qdrant",
+                "VECTOR_EMBEDDING_PROVIDER": "hashing",
                 "VECTOR_EMBEDDING_DIMENSION": "64",
                 "QDRANT_COLLECTION_PREFIX": "staging",
             }
         )
 
         self.assertEqual(settings.vector_repository_backend, "qdrant")
+        self.assertEqual(settings.vector_embedding_provider, "hashing")
         self.assertEqual(settings.vector_embedding_dimension, 64)
         self.assertEqual(settings.qdrant_collection_prefix, "staging")
+
+    def test_load_runtime_settings_rejects_invalid_embedding_provider(self):
+        with self.assertRaises(RuntimeError):
+            load_runtime_settings({"VECTOR_EMBEDDING_PROVIDER": "openai"})
 
     def test_load_runtime_settings_rejects_invalid_vector_backend(self):
         with self.assertRaises(RuntimeError):

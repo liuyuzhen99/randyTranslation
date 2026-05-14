@@ -104,6 +104,14 @@ class QdrantVectorRepository(VectorRepository):
 
     def _ensure_collection(self, collection: str) -> None:
         if self._collection_exists(collection):
+            vector_size = self._collection_vector_size(collection)
+            expected_size = self.embedding_provider.dimension
+            if vector_size is not None and vector_size != expected_size:
+                raise RuntimeError(
+                    f"Qdrant collection '{collection}' has vector dimension {vector_size}, "
+                    f"but the configured embedding provider emits {expected_size}. "
+                    "Rebuild the collection and rerun scripts/phase8_qdrant_backfill.py before writing."
+                )
             return
         models = self._models()
         if models is None:
@@ -132,6 +140,13 @@ class QdrantVectorRepository(VectorRepository):
             return True
         except Exception:
             return False
+
+    def _collection_vector_size(self, collection: str) -> int | None:
+        try:
+            info = self.client.get_collection(collection)
+        except Exception:
+            return None
+        return _extract_vector_size(info)
 
     def _collection_name(self, namespace: str) -> str:
         if self.collection_prefix:
@@ -197,6 +212,9 @@ class _QdrantHttpClient:
             if exc.code == 404:
                 return False
             raise
+
+    def get_collection(self, collection_name: str) -> dict:
+        return self._request("GET", f"/collections/{collection_name}")
 
     def create_collection(self, *, collection_name: str, vectors_config) -> None:
         if isinstance(vectors_config, dict):
@@ -267,3 +285,35 @@ class _QdrantHttpClient:
         with urlopen(request, timeout=10) as response:
             raw = response.read().decode("utf-8")
         return json.loads(raw) if raw else {}
+
+
+def _extract_vector_size(info) -> int | None:
+    if isinstance(info, dict):
+        payload = info.get("result", info)
+        vectors = (
+            payload.get("config", {})
+            .get("params", {})
+            .get("vectors")
+        )
+        return _vector_size_from_config(vectors)
+
+    config = getattr(info, "config", None)
+    params = getattr(config, "params", None)
+    vectors = getattr(params, "vectors", None)
+    return _vector_size_from_config(vectors)
+
+
+def _vector_size_from_config(vectors) -> int | None:
+    if vectors is None:
+        return None
+    if isinstance(vectors, dict):
+        if "size" in vectors:
+            return int(vectors["size"])
+        first_config = next(iter(vectors.values()), None)
+        return _vector_size_from_config(first_config)
+    size = getattr(vectors, "size", None)
+    if size is not None:
+        return int(size)
+    if isinstance(vectors, (list, tuple)) and vectors:
+        return _vector_size_from_config(vectors[0])
+    return None

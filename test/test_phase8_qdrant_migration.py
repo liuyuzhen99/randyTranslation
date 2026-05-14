@@ -179,6 +179,25 @@ class Phase8QdrantMigrationTests(unittest.TestCase):
         self.assertEqual(results[0].vector_id, source_id)
         self.assertEqual(listed[0].metadata["artist"], "Contract")
 
+    def test_qdrant_repository_rejects_existing_collection_dimension_mismatch(self):
+        client = FakeQdrantClient()
+        client.created_collections["phase8_test_translation_memory"] = {"size": 384, "distance": "Cosine"}
+        repository = QdrantVectorRepository(
+            url="",
+            client=client,
+            collection_prefix="phase8_test",
+            embedding_provider=HashingEmbeddingProvider(dimension=1024),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "vector dimension 384"):
+            repository.upsert(
+                VectorRecord(
+                    vector_id="dimension-mismatch",
+                    namespace=TRANSLATION_MEMORY,
+                    text="new bge vector",
+                )
+            )
+
     def test_retrieval_quality_case_loader_reads_json_contract(self):
         with TemporaryDirectory() as temp_root:
             cases_path = f"{temp_root}/cases.json"
@@ -203,6 +222,17 @@ class FakeQdrantClient:
 
     def collection_exists(self, collection_name: str) -> bool:
         return collection_name in self.created_collections
+
+    def get_collection(self, collection_name: str) -> dict:
+        return {
+            "result": {
+                "config": {
+                    "params": {
+                        "vectors": self.created_collections[collection_name],
+                    }
+                }
+            }
+        }
 
     def create_collection(self, *, collection_name: str, vectors_config) -> None:
         self.created_collections[collection_name] = vectors_config

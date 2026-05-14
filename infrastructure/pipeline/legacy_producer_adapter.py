@@ -15,7 +15,13 @@ class ProducerBackend(Protocol):
     def audit_step(self, english_texts: list[str], *, title: str = "", references: list[dict] | None = None) -> dict:
         ...
 
-    def generate_bilingual_srt(self, segments, english_texts, output_file: str):
+    def generate_bilingual_srt(
+        self,
+        segments,
+        english_texts,
+        output_file: str,
+        translation_references: list[dict] | None = None,
+    ):
         ...
 
     def burn_video(self, video_ref, srt_file: str, final_path: str):
@@ -39,7 +45,13 @@ class MissingProducerBackend:
     def audit_step(self, english_texts: list[str], *, title: str = "", references: list[dict] | None = None) -> dict:
         self._raise()
 
-    def generate_bilingual_srt(self, segments, english_texts, output_file: str):
+    def generate_bilingual_srt(
+        self,
+        segments,
+        english_texts,
+        output_file: str,
+        translation_references: list[dict] | None = None,
+    ):
         self._raise()
 
     def burn_video(self, video_ref, srt_file: str, final_path: str):

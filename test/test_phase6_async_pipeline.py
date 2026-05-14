@@ -12,11 +12,13 @@ from fastapi.testclient import TestClient
 import api.service as api_service
 from application.services.phase3_catalog_service import CandidateDiscoveryPayload, Phase3Providers
 from application.services.async_pipeline import AsyncPipelineCommandService, PipelineStageWorker
+from application.services.pipeline_stage_handlers import PipelineStageHandlers
+from application.services.phase8_vectors import TRANSLATION_MEMORY
 from application.services.phase7_health import Phase7HealthService
 from application.services.phase7_metrics import render_prometheus_metrics
 from application.services.phase7_observability import Phase7ObservabilityService
 from application.services.retry_scheduler import Phase6RetryScheduler
-from domain.entities import Job, PipelineStageExecution
+from domain.entities import Job, PipelineStageExecution, VectorRecord
 from domain.enums import JobStatus, OutboxStatus, StageStatus, StageType
 from domain.message_contracts import PipelineStageMessage, ReviewContext
 from domain.queue_topology import PipelineQueueTopology, STAGE_ORDER, next_stage
@@ -29,6 +31,7 @@ from infrastructure.persistence.sqlalchemy_repositories import (
 )
 from infrastructure.messaging.rabbitmq_consumer import RabbitMQWorkerConfig, RabbitMQWorkerConsumer
 from infrastructure.messaging.rabbitmq_topology import RabbitMQTopologyConfig, RabbitMQTopologyManager
+from infrastructure.storage.local_media_storage import LocalFilesystemMediaStorage
 
 
 class FakeProducerBackend:
@@ -48,7 +51,13 @@ class FakeProducerBackend:
     def audit_step(self, english_texts: list[str], *, title: str = "", references: list[dict] | None = None) -> dict:
         return {"score": 80, "decision": "Pass", "reason": "ok", "key_lyrics": english_texts[:1]}
 
-    def generate_bilingual_srt(self, segments, english_texts, output_file: str):
+    def generate_bilingual_srt(
+        self,
+        segments,
+        english_texts,
+        output_file: str,
+        translation_references: list[dict] | None = None,
+    ):
         with open(output_file, "w", encoding="utf-8") as file_obj:
             file_obj.write("1\n00:00:00,000 --> 00:00:01,000\nhello\n你好\n\n")
         return output_file
@@ -66,6 +75,44 @@ class RecordingPublisher:
         self.published.append(
             {"topic": topic, "payload": payload, "correlation_id": correlation_id}
         )
+
+
+class RecordingTranslationBackend(FakeProducerBackend):
+    def __init__(self):
+        super().__init__()
+        self.translation_references = None
+
+    def generate_bilingual_srt(
+        self,
+        segments,
+        english_texts,
+        output_file: str,
+        translation_references: list[dict] | None = None,
+    ):
+        self.translation_references = translation_references
+        return super().generate_bilingual_srt(
+            segments,
+            english_texts,
+            output_file,
+            translation_references=translation_references,
+        )
+
+
+class FakeVectorRepository:
+    def __init__(self):
+        self.searches = []
+
+    def search(self, namespace: str, text: str, limit: int = 5):
+        self.searches.append({"namespace": namespace, "text": text, "limit": limit})
+        return [
+            VectorRecord(
+                vector_id="translation-memory-1",
+                namespace=namespace,
+                text="dreams and pressure in the city",
+                metadata={"title": "Memory Song", "translation": "城市里的梦想与压力"},
+                score=0.91,
+            )
+        ]
 
 
 class Phase6AsyncPipelineTests(unittest.TestCase):
@@ -238,6 +285,39 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
                 "pipeline.dlq",
                 {event.topic for event in outbox_repository.list_pending()},
             )
+
+    def test_translate_stage_retrieves_qdrant_translation_references(self):
+        with TemporaryDirectory() as temp_root:
+            backend = RecordingTranslationBackend()
+            vector_repository = FakeVectorRepository()
+            media_storage = LocalFilesystemMediaStorage(
+                temp_root=os.path.join(temp_root, "temp"),
+                output_root=os.path.join(temp_root, "output"),
+            )
+            handlers = PipelineStageHandlers(
+                media_storage=media_storage,
+                producer_backend_factory=lambda: backend,
+                vector_repository=vector_repository,
+            )
+            message = PipelineStageMessage.build(
+                message_type="pipeline.stage.command",
+                job_id="job-translation-rag",
+                stage=StageType.TRANSLATE,
+                song_name="Translation RAG Song",
+                payload={
+                    "segments": [{"start": 0.0, "end": 1.0, "text": "dreams under pressure"}],
+                    "english_texts": ["dreams under pressure"],
+                },
+            )
+
+            result = handlers.translate(message)
+
+        self.assertEqual(vector_repository.searches[0]["namespace"], TRANSLATION_MEMORY)
+        self.assertEqual(vector_repository.searches[0]["limit"], 3)
+        self.assertIn("dreams under pressure", vector_repository.searches[0]["text"])
+        self.assertEqual(backend.translation_references[0]["title"], "Memory Song")
+        self.assertEqual(backend.translation_references[0]["translation"], "城市里的梦想与压力")
+        self.assertEqual(result["translation_references"], backend.translation_references)
 
     def test_phase6_create_task_writes_command_outbox_instead_of_running_background(self):
         with TemporaryDirectory() as temp_root:

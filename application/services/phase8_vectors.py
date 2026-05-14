@@ -208,21 +208,51 @@ class BGEEmbeddingProvider:
     """Local open-source embedding using BAAI/bge-m3 (1024-dim, MIT license).
 
     Bilingual (ZH+EN) SOTA — suited for translation memory and music taste retrieval.
-    Import is deferred to avoid startup cost when using HashingEmbeddingProvider.
+    Imports are deferred to avoid startup cost when vector retrieval is disabled.
     """
 
     MODEL = "BAAI/bge-m3"
     dimension = 1024
 
     def __init__(self, model: str = MODEL) -> None:
-        from sentence_transformers import SentenceTransformer
-        self._model = SentenceTransformer(model)
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+
+        self._torch = torch
+        self._tokenizer = AutoTokenizer.from_pretrained(model)
+        self._model = AutoModel.from_pretrained(model)
+        self._model.eval()
 
     def embed(self, text: str) -> list[float]:
-        return self._model.encode(
+        inputs = self._tokenizer(
             text.strip() or "empty",
-            normalize_embeddings=True,
-        ).tolist()
+            padding=True,
+            truncation=True,
+            max_length=8192,
+            return_tensors="pt",
+        )
+        with self._torch.no_grad():
+            outputs = self._model(**inputs)
+        token_embeddings = outputs.last_hidden_state
+        attention_mask = inputs["attention_mask"].unsqueeze(-1).expand(token_embeddings.size()).float()
+        summed = (token_embeddings * attention_mask).sum(dim=1)
+        counts = attention_mask.sum(dim=1).clamp(min=1e-9)
+        embedding = summed / counts
+        embedding = self._torch.nn.functional.normalize(embedding, p=2, dim=1)
+        return embedding[0].tolist()
+
+
+def build_embedding_provider(
+    provider: str = "bge",
+    *,
+    dimension: int = 1024,
+) -> EmbeddingProvider:
+    name = (provider or "bge").strip().lower()
+    if name in {"bge", "bge-m3", "baai/bge-m3"}:
+        return BGEEmbeddingProvider()
+    if name in {"hash", "hashing", "fallback"}:
+        return HashingEmbeddingProvider(dimension)
+    raise ValueError("Invalid embedding provider. Expected one of: bge, hashing.")
 
 
 def _tokenize(text: str) -> list[str]:

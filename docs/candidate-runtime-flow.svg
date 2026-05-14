@@ -1,0 +1,215 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1900" viewBox="0 0 1600 1900" role="img" aria-labelledby="title desc">
+  <title id="title">randyTranslation Candidate Runtime Flow</title>
+  <desc id="desc">End-to-end runtime flow from artist sync to candidate pipeline, outbox dispatch, RabbitMQ worker execution, and artifact generation.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#334155" />
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.16" />
+    </filter>
+    <style>
+      .bg { fill: #f8fafc; }
+      .lane { fill: #ffffff; stroke: #d8dee9; stroke-width: 1.2; }
+      .laneTitle { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .laneSub { font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
+      .box { filter: url(#shadow); rx: 10; ry: 10; stroke-width: 1.4; }
+      .boxTitle { font: 700 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .boxText { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .smallText { font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
+      .pill { rx: 14; ry: 14; }
+      .pillText { font: 700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .arrow { fill: none; stroke: #334155; stroke-width: 2.2; marker-end: url(#arrow); }
+      .softArrow { fill: none; stroke: #64748b; stroke-width: 1.8; stroke-dasharray: 7 6; marker-end: url(#arrow); }
+      .note { fill: #fffbeb; stroke: #f59e0b; stroke-width: 1.2; rx: 10; ry: 10; }
+      .noteText { font: 600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #92400e; }
+      .footer { font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="1900" />
+
+  <text x="80" y="62" style="font: 800 30px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#0f172a;">randyTranslation Candidate Runtime Flow</text>
+  <text x="80" y="92" style="font: 500 15px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#64748b;">From artist synchronization to candidate pipeline execution, reliable outbox delivery, RabbitMQ worker processing, and final artifact registration.</text>
+
+  <!-- Lanes -->
+  <rect class="lane" x="60" y="130" width="280" height="1660" rx="16" />
+  <text class="laneTitle" x="85" y="165">Catalog / Candidate</text>
+  <text class="laneSub" x="85" y="188">Phase 3 discovery</text>
+
+  <rect class="lane" x="360" y="130" width="280" height="1660" rx="16" />
+  <text class="laneTitle" x="385" y="165">API / Application</text>
+  <text class="laneSub" x="385" y="188">Job, command service, reviews</text>
+
+  <rect class="lane" x="660" y="130" width="280" height="1660" rx="16" />
+  <text class="laneTitle" x="685" y="165">Outbox / RabbitMQ</text>
+  <text class="laneSub" x="685" y="188">Reliable delivery boundary</text>
+
+  <rect class="lane" x="960" y="130" width="280" height="1660" rx="16" />
+  <text class="laneTitle" x="985" y="165">Worker / Stage Runtime</text>
+  <text class="laneSub" x="985" y="188">Consumer, worker, handlers</text>
+
+  <rect class="lane" x="1260" y="130" width="280" height="1660" rx="16" />
+  <text class="laneTitle" x="1285" y="165">Storage / Outputs</text>
+  <text class="laneSub" x="1285" y="188">Qdrant, media, artifacts</text>
+
+  <!-- Boxes -->
+  <g id="artist-sync">
+    <rect class="box" x="90" y="235" width="220" height="115" fill="#dbeafe" stroke="#60a5fa" />
+    <text class="boxTitle" x="112" y="268">Artist Resync</text>
+    <text class="boxText" x="112" y="294">resolve YouTube channel</text>
+    <text class="boxText" x="112" y="316">discover RSS candidates</text>
+    <text class="boxText" x="112" y="338">write ArtistSyncRun</text>
+  </g>
+
+  <g id="candidate">
+    <rect class="box" x="90" y="420" width="220" height="108" fill="#e0f2fe" stroke="#38bdf8" />
+    <text class="boxTitle" x="112" y="453">VideoCandidate</text>
+    <text class="boxText" x="112" y="479">status = discovered</text>
+    <text class="boxText" x="112" y="501">discovery_run_id</text>
+  </g>
+
+  <g id="start-pipeline">
+    <rect class="box" x="390" y="420" width="220" height="108" fill="#f0fdf4" stroke="#4ade80" />
+    <text class="boxTitle" x="412" y="453">Start Pipeline API</text>
+    <text class="boxText" x="412" y="479">POST candidate / pipeline</text>
+    <text class="boxText" x="412" y="501">create Job</text>
+  </g>
+
+  <g id="job">
+    <rect class="box" x="390" y="590" width="220" height="120" fill="#dcfce7" stroke="#22c55e" />
+    <text class="boxTitle" x="412" y="623">Job</text>
+    <text class="boxText" x="412" y="649">overall task state</text>
+    <text class="boxText" x="412" y="671">job_id, song_name</text>
+    <text class="boxText" x="412" y="693">current_stage, progress</text>
+  </g>
+
+  <g id="first-stage">
+    <rect class="box" x="390" y="775" width="220" height="126" fill="#ecfccb" stroke="#84cc16" />
+    <text class="boxTitle" x="412" y="808">enqueue_first_stage</text>
+    <text class="boxText" x="412" y="834">PipelineStageMessage</text>
+    <text class="boxText" x="412" y="856">stage = download</text>
+    <text class="boxText" x="412" y="878">dedupe_key + trace_id</text>
+  </g>
+
+  <g id="outbox">
+    <rect class="box" x="690" y="775" width="220" height="126" fill="#fef3c7" stroke="#f59e0b" />
+    <text class="boxTitle" x="712" y="808">OutboxEvent</text>
+    <text class="boxText" x="712" y="834">topic = pipeline.command</text>
+    <text class="boxText" x="712" y="856">payload = message JSON</text>
+    <text class="boxText" x="712" y="878">status = pending</text>
+  </g>
+
+  <g id="dispatcher">
+    <rect class="box" x="690" y="965" width="220" height="118" fill="#fde68a" stroke="#d97706" />
+    <text class="boxTitle" x="712" y="998">OutboxDispatcher</text>
+    <text class="boxText" x="712" y="1024">list pending events</text>
+    <text class="boxText" x="712" y="1046">publish to RabbitMQ</text>
+    <text class="boxText" x="712" y="1068">mark published / failed</text>
+  </g>
+
+  <g id="rabbit">
+    <rect class="box" x="690" y="1148" width="220" height="130" fill="#ffedd5" stroke="#fb923c" />
+    <text class="boxTitle" x="712" y="1181">RabbitMQ Queues</text>
+    <text class="boxText" x="712" y="1207">pipeline.command</text>
+    <text class="boxText" x="712" y="1229">pipeline.stage.*</text>
+    <text class="boxText" x="712" y="1251">pipeline.dlq</text>
+  </g>
+
+  <g id="consumer">
+    <rect class="box" x="990" y="1148" width="220" height="130" fill="#ede9fe" stroke="#8b5cf6" />
+    <text class="boxTitle" x="1012" y="1181">RabbitMQWorkerConsumer</text>
+    <text class="boxText" x="1012" y="1207">consume queue message</text>
+    <text class="boxText" x="1012" y="1229">ack / nack</text>
+    <text class="boxText" x="1012" y="1251">dispatch next outbox</text>
+  </g>
+
+  <g id="worker">
+    <rect class="box" x="990" y="1340" width="220" height="150" fill="#f3e8ff" stroke="#a855f7" />
+    <text class="boxTitle" x="1012" y="1373">PipelineStageWorker</text>
+    <text class="boxText" x="1012" y="1399">from_payload()</text>
+    <text class="boxText" x="1012" y="1421">dedupe check</text>
+    <text class="boxText" x="1012" y="1443">write stage execution</text>
+    <text class="boxText" x="1012" y="1465">run handler / retry / DLQ</text>
+  </g>
+
+  <g id="execution">
+    <rect class="box" x="990" y="1555" width="220" height="120" fill="#e9d5ff" stroke="#9333ea" />
+    <text class="boxTitle" x="1012" y="1588">PipelineStageExecution</text>
+    <text class="boxText" x="1012" y="1614">status + attempt</text>
+    <text class="boxText" x="1012" y="1636">result_payload + logs</text>
+    <text class="boxText" x="1012" y="1658">next_retry_at on failure</text>
+  </g>
+
+  <g id="handlers">
+    <rect class="box" x="1290" y="1340" width="220" height="238" fill="#ccfbf1" stroke="#14b8a6" />
+    <text class="boxTitle" x="1312" y="1373">PipelineStageHandlers</text>
+    <text class="boxText" x="1312" y="1401">download: raw video</text>
+    <text class="boxText" x="1312" y="1423">transcribe: lyrics</text>
+    <text class="boxText" x="1312" y="1445">audit: taste review</text>
+    <text class="boxText" x="1312" y="1467">manual_review: pause gate</text>
+    <text class="boxText" x="1312" y="1489">translate: bilingual SRT</text>
+    <text class="boxText" x="1312" y="1511">translation_review: gate</text>
+    <text class="boxText" x="1312" y="1533">render: final video</text>
+  </g>
+
+  <g id="qdrant">
+    <rect class="box" x="1290" y="960" width="220" height="122" fill="#cffafe" stroke="#06b6d4" />
+    <text class="boxTitle" x="1312" y="993">Qdrant</text>
+    <text class="boxText" x="1312" y="1019">user_taste_v1</text>
+    <text class="boxText" x="1312" y="1041">translation_memory</text>
+    <text class="boxText" x="1312" y="1063">BGE 1024-dim vectors</text>
+  </g>
+
+  <g id="media">
+    <rect class="box" x="1290" y="1640" width="220" height="120" fill="#dcfce7" stroke="#16a34a" />
+    <text class="boxTitle" x="1312" y="1673">Artifacts</text>
+    <text class="boxText" x="1312" y="1699">final_video.mp4</text>
+    <text class="boxText" x="1312" y="1721">bilingual.srt</text>
+    <text class="boxText" x="1312" y="1743">ArtifactRecord</text>
+  </g>
+
+  <!-- Arrows -->
+  <path class="arrow" d="M200 350 L200 420" />
+  <path class="arrow" d="M310 474 L390 474" />
+  <path class="arrow" d="M500 528 L500 590" />
+  <path class="arrow" d="M500 710 L500 775" />
+  <path class="arrow" d="M610 838 L690 838" />
+  <path class="arrow" d="M800 901 L800 965" />
+  <path class="arrow" d="M800 1083 L800 1148" />
+  <path class="arrow" d="M910 1213 L990 1213" />
+  <path class="arrow" d="M1100 1278 L1100 1340" />
+  <path class="arrow" d="M1210 1415 L1290 1415" />
+  <path class="arrow" d="M1100 1490 L1100 1555" />
+  <path class="arrow" d="M1400 1578 L1400 1640" />
+
+  <!-- Feedback loops -->
+  <path class="softArrow" d="M1210 1610 C1260 1610, 1240 1213, 990 1213" />
+  <text class="smallText" x="1070" y="1038">retry_scheduler re-enqueues due attempts</text>
+
+  <path class="softArrow" d="M1210 1688 C1275 1812, 520 1812, 500 901" />
+  <text class="smallText" x="545" y="1832">next_stage writes another OutboxEvent until render completes</text>
+
+  <path class="softArrow" d="M1290 1465 C1240 1465, 1240 1020, 1290 1020" />
+  <text class="smallText" x="1176" y="1005">RAG lookup</text>
+
+  <!-- Pause note -->
+  <rect class="note" x="972" y="775" width="520" height="96" />
+  <text class="noteText" x="995" y="808">Pause gates</text>
+  <text class="noteText" x="995" y="832">manual_review and translation_review can return pause=true.</text>
+  <text class="noteText" x="995" y="856">Approve API resumes by writing the next PipelineStageMessage to outbox.</text>
+
+  <!-- Status pills -->
+  <rect class="pill" x="715" y="912" width="170" height="30" fill="#fef9c3" stroke="#eab308" />
+  <text class="pillText" x="738" y="932">pending -> published</text>
+
+  <rect class="pill" x="1017" y="1505" width="168" height="30" fill="#f5f3ff" stroke="#8b5cf6" />
+  <text class="pillText" x="1040" y="1525">processing -> completed</text>
+
+  <rect class="pill" x="1018" y="1696" width="165" height="30" fill="#fee2e2" stroke="#ef4444" />
+  <text class="pillText" x="1044" y="1716">failed -> retry / DLQ</text>
+
+  <!-- Footer legend -->
+  <text class="footer" x="80" y="1848">Primary runtime source of work is RabbitMQ. The database records durable intent (outbox) and durable execution state (pipeline_stage_executions).</text>
+  <text class="footer" x="80" y="1872">Generated for docs/candidate-runtime-flow.svg. Open directly in a browser, embed in Markdown, or import into design tools that support SVG.</text>
+</svg>

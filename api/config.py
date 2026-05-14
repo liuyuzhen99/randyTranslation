@@ -95,6 +95,7 @@ KNOWN_ENV_VARS: tuple[str, ...] = (
     "QDRANT_URL",
     "QDRANT_API_KEY",
     "VECTOR_REPOSITORY_BACKEND",
+    "VECTOR_EMBEDDING_PROVIDER",
     "VECTOR_EMBEDDING_DIMENSION",
     "QDRANT_COLLECTION_PREFIX",
     "OPENAI_API_KEY",
@@ -164,6 +165,7 @@ class AppRuntimeSettings(BaseSettings):
     artifact_temp_retention_days: int = 1
     artifact_final_retention_days: int = 0
     vector_repository_backend: str = "sqlite"
+    vector_embedding_provider: str = "bge"
     vector_embedding_dimension: int = 1024
     qdrant_collection_prefix: str = ""
     phase9_cutover_read_source: str = "legacy"
@@ -197,6 +199,16 @@ class AppRuntimeSettings(BaseSettings):
         if val not in {"sqlite", "qdrant"}:
             raise RuntimeError(
                 "Invalid VECTOR_REPOSITORY_BACKEND. Expected one of: sqlite, qdrant."
+            )
+        return val
+
+    @field_validator("vector_embedding_provider", mode="before")
+    @classmethod
+    def _validate_vector_embedding_provider(cls, v: str) -> str:
+        val = (v or "bge").strip().lower()
+        if val not in {"bge", "bge-m3", "baai/bge-m3", "hash", "hashing", "fallback"}:
+            raise RuntimeError(
+                "Invalid VECTOR_EMBEDDING_PROVIDER. Expected one of: bge, hashing."
             )
         return val
 
@@ -293,8 +305,11 @@ def create_vector_repository(
     settings = runtime_settings or load_runtime_settings(environ)
     source = environ if environ is not None else os.environ
     if settings.vector_repository_backend == "qdrant":
-        from application.services.phase8_vectors import BGEEmbeddingProvider
-        embedding_provider = BGEEmbeddingProvider()
+        from application.services.phase8_vectors import build_embedding_provider
+        embedding_provider = build_embedding_provider(
+            settings.vector_embedding_provider,
+            dimension=settings.vector_embedding_dimension,
+        )
         return QdrantVectorRepository(
             url=source.get("QDRANT_URL", "").strip(),
             api_key=source.get("QDRANT_API_KEY", "").strip(),

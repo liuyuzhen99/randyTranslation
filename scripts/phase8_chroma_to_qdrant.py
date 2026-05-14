@@ -7,7 +7,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from application.services.phase8_vectors import (
-    HashingEmbeddingProvider,
+    build_embedding_provider,
     deterministic_vector_id,
 )
 from domain.entities import VectorRecord
@@ -130,7 +130,8 @@ def main() -> int:
     parser.add_argument("--qdrant-url", default=os.getenv("QDRANT_URL", "http://127.0.0.1:6333"))
     parser.add_argument("--qdrant-api-key", default=os.getenv("QDRANT_API_KEY", ""))
     parser.add_argument("--collection-prefix", default=os.getenv("QDRANT_COLLECTION_PREFIX", ""))
-    parser.add_argument("--embedding-dimension", type=int, default=int(os.getenv("VECTOR_EMBEDDING_DIMENSION", "384")))
+    parser.add_argument("--embedding-provider", default=os.getenv("VECTOR_EMBEDDING_PROVIDER", "bge"))
+    parser.add_argument("--embedding-dimension", type=int, default=int(os.getenv("VECTOR_EMBEDDING_DIMENSION", "1024")))
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--clear-target", action="store_true")
     parser.add_argument("--clear-all", action="store_true")
@@ -140,7 +141,7 @@ def main() -> int:
     source = ChromaVectorRepository(args.chroma_path)
     namespaces = args.namespaces or source.collection_names()
     dimension = _infer_dimension(source, namespaces, args.embedding_dimension)
-    embedding_provider = HashingEmbeddingProvider(dimension)
+    embedding_provider = build_embedding_provider(args.embedding_provider, dimension=dimension)
     target = QdrantVectorRepository(
         url=args.qdrant_url,
         api_key=args.qdrant_api_key,
@@ -204,6 +205,7 @@ def main() -> int:
         "dry_run": args.dry_run,
         "chroma_path": args.chroma_path,
         "qdrant_url": args.qdrant_url,
+        "embedding_provider": args.embedding_provider,
         "embedding_dimension": dimension,
         "deleted_collections": deleted,
         "reports": reports,

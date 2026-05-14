@@ -12,6 +12,7 @@ Implemented:
 - `Phase8VectorMigrationService` for namespace backfill with deterministic Qdrant point IDs.
 - `Phase8RetrievalQualityEvaluator` for representative retrieval baseline checks.
 - `QdrantVectorRepository` adapter with optional `qdrant-client` import.
+- Existing Qdrant collection dimension guard before writes.
 - Qdrant REST fallback for environments without `qdrant-client`.
 - SQLite vector source now stores metadata as JSON and can enumerate namespace records.
 - `scripts/phase8_qdrant_backfill.py` for dry-run and live Qdrant backfill.
@@ -47,7 +48,7 @@ QDRANT_URL=http://127.0.0.1:6333 MEDIA_STORAGE_BACKEND=local MEDIA_TEMP_ROOT=/pr
 
 Results:
 
-- Phase 8 Qdrant migration tests: 7 passed.
+- Phase 8 Qdrant migration tests: 8 passed.
 - Config validation tests: 27 passed.
 - Env template contract: 1 passed.
 - API baseline tests: 9 passed.

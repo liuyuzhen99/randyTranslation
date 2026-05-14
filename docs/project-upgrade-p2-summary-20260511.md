@@ -274,32 +274,33 @@ class BGEEmbeddingProvider:
     """Local open-source embedding using BAAI/bge-m3 (1024-dim, MIT license).
 
     Bilingual (ZH+EN) SOTA — suited for translation memory and music taste retrieval.
-    Import is deferred to avoid startup cost when using HashingEmbeddingProvider.
+    Imports are deferred to avoid startup cost when using HashingEmbeddingProvider.
     """
     MODEL = "BAAI/bge-m3"
     dimension = 1024
 
     def __init__(self, model: str = MODEL) -> None:
-        from sentence_transformers import SentenceTransformer
-        self._model = SentenceTransformer(model)
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+        self._torch = torch
+        self._tokenizer = AutoTokenizer.from_pretrained(model)
+        self._model = AutoModel.from_pretrained(model)
+        self._model.eval()
 
     def embed(self, text: str) -> list[float]:
-        return self._model.encode(
-            text.strip() or "empty",
-            normalize_embeddings=True,
-        ).tolist()
+        ...
 ```
 
-- `SentenceTransformer` 延迟导入，不影响未使用 qdrant 后端时的启动开销
-- `normalize_embeddings=True`：输出 L2 归一化向量，与余弦相似度计算兼容
+- `torch` / `transformers` 延迟导入，不影响未使用 qdrant 后端时的启动开销
+- 输出 L2 归一化向量，与余弦相似度计算兼容
 
 **`api/config.py`** — `create_vector_repository` 简化：
 ```python
 # 改前：条件选 OpenAI / HashingEmbeddingProvider
-# 改后：直接使用 BGEEmbeddingProvider
+# 改后：通过 VECTOR_EMBEDDING_PROVIDER 选择 BGEEmbeddingProvider
 if settings.vector_repository_backend == "qdrant":
-    from application.services.phase8_vectors import BGEEmbeddingProvider
-    embedding_provider = BGEEmbeddingProvider()
+    from application.services.phase8_vectors import build_embedding_provider
+    embedding_provider = build_embedding_provider(settings.vector_embedding_provider)
     return QdrantVectorRepository(...)
 ```
 
@@ -307,6 +308,11 @@ if settings.vector_repository_backend == "qdrant":
 ```python
 vector_embedding_dimension: int = 1024  # 原为 384，对应 bge-m3 维度
 ```
+
+**Qdrant 维度迁移约束** — 切换前必须通过 Qdrant dashboard/API 的 `collection_info` 确认 collection 维度：
+- 曾用 OpenAI 写入的生产 collection 通常为 1536-dim，切到 bge-m3 前必须重建为 1024 并重跑 `scripts/phase8_qdrant_backfill.py`
+- 一直使用 `HashingEmbeddingProvider` fallback 的 collection 通常为 384-dim，同样必须重建为 1024 并 backfill
+- 已确认是 1024-dim 的 collection 才能跳过维度重建，但仍需跑 parity 和 retrieval quality gate
 
 **`requirements.txt`** — 新增依赖：
 ```
