@@ -224,6 +224,59 @@ class Phase3CatalogTests(unittest.TestCase):
             self.assertEqual(refreshed_artist.last_sync_started_at, new_started_at)
             self.assertIsNone(refreshed_artist.yt_channel_id)
 
+    def test_catalog_resync_raises_when_successful_result_loses_finish_token(self):
+        with TemporaryDirectory() as temp_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase3-stale-result.db')}")
+            session_factory.create_schema()
+            artist_repository = SQLAlchemyArtistRepository(session_factory)
+            artist_repository.upsert(Artist(spotify_id="artist-stale-result", name="Stale Result Artist"))
+            takeover_started_at = datetime(2026, 5, 20, 10, 5, 0)
+
+            def candidate_lookup(artist, days):
+                artist_repository.upsert(
+                    Artist(
+                        spotify_id=artist.spotify_id,
+                        name=artist.name,
+                        yt_channel_id=artist.yt_channel_id,
+                        status=artist.status,
+                        sync_status=SyncStatus.PROCESSING,
+                        last_sync_started_at=takeover_started_at,
+                    )
+                )
+                return [
+                    CandidateDiscoveryPayload(
+                        video_id="video-stale-result",
+                        title="stale result video",
+                        source_url="https://youtube.test/watch?v=video-stale-result",
+                        published_at=datetime(2026, 4, 18, 10, 0, 0),
+                    )
+                ]
+
+            service = api_service.create_phase3_catalog_service(
+                providers=Phase3Providers(
+                    followed_artists_lookup=lambda: [],
+                    channel_lookup=lambda artist: "UC_STALE_RESULT",
+                    candidate_lookup=candidate_lookup,
+                ),
+                runtime_settings=api_service.load_runtime_settings(
+                    {
+                        "JOB_REPOSITORY_BACKEND": "sqlalchemy",
+                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3-stale-result.db')}",
+                        "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                    }
+                ),
+                session_factory=session_factory,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "Artist sync result is stale"):
+                service.resync_artist("artist-stale-result", days=14, trigger="manual")
+
+            refreshed_artist = artist_repository.get("artist-stale-result")
+            candidates = SQLAlchemyCandidateRepository(session_factory).list_for_artist("artist-stale-result")
+            self.assertEqual(refreshed_artist.sync_status, SyncStatus.PROCESSING)
+            self.assertEqual(refreshed_artist.last_sync_started_at, takeover_started_at)
+            self.assertEqual(len(candidates), 1)
+
     def test_list_artists_supports_candidate_and_sync_sorting(self):
         with TemporaryDirectory() as temp_root:
             db_path = os.path.join(temp_root, "phase3-sort.db")

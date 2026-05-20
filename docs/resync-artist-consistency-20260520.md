@@ -41,6 +41,14 @@ ArtistRepository.try_finish_sync(spotify_id, started_at, finished_artist)
 
 The finish update only applies when the row is still `processing` with the same `last_sync_started_at` token. If another resync has taken over, the old run cannot overwrite the newer artist state.
 
+If a successful discovery run loses this finish token, `resync_artist()` now raises:
+
+```text
+Artist sync result is stale
+```
+
+In that case the source run and any discovered candidates may already have been persisted, but the API does not report the stale run as the current artist sync result.
+
 ## Configuration
 
 Added runtime setting:
@@ -86,6 +94,7 @@ Targeted tests cover:
 - active `processing` artists reject a second resync
 - stale `processing` artists can be taken over
 - stale finish tokens cannot overwrite newer `processing` state
+- stale successful results are not returned as `completed`
 - API returns `409` for in-progress resync
 
 Commands run:

@@ -42,6 +42,10 @@ class CandidateListFilters:
     status: str = ""
 
 
+class StaleArtistSyncResult(RuntimeError):
+    pass
+
+
 class ArtistSyncService:
     def __init__(
         self,
@@ -334,11 +338,13 @@ class CandidateCatalogService:
                 last_channel_resolved_at=resolved_artist.last_channel_resolved_at,
                 last_discovery_at=completed_at,
             )
-            self.artist_repository.try_finish_sync(
+            finished = self.artist_repository.try_finish_sync(
                 updated_artist.spotify_id,
                 started_at=overall_started_at,
                 finished_artist=updated_artist,
             )
+            if not finished:
+                raise StaleArtistSyncResult("Artist sync result is stale")
             return {
                 "run_id": rss_run.run_id,
                 "artist_id": updated_artist.spotify_id,
@@ -349,6 +355,8 @@ class CandidateCatalogService:
                 "channel_run_id": channel_run.run_id,
                 "discovery_run_id": rss_run.run_id,
             }
+        except StaleArtistSyncResult:
+            raise
         except Exception as exc:
             completed_at = utc_now()
             failed_artist = Artist(
