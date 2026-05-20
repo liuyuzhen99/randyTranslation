@@ -81,6 +81,149 @@ class Phase3CatalogTests(unittest.TestCase):
             self.assertEqual(len(candidates), 2)
             self.assertEqual(candidates[0].video_id, "video-1")
 
+    def test_catalog_resync_marks_artist_failed_when_provider_fails(self):
+        with TemporaryDirectory() as temp_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase3-failed.db')}")
+            session_factory.create_schema()
+            artist_repository = SQLAlchemyArtistRepository(session_factory)
+            artist_repository.upsert(Artist(spotify_id="artist-fail", name="Failing Artist"))
+
+            service = api_service.create_phase3_catalog_service(
+                providers=Phase3Providers(
+                    followed_artists_lookup=lambda: [],
+                    channel_lookup=lambda artist: "UC_FAILING",
+                    candidate_lookup=lambda artist, days: (_ for _ in ()).throw(RuntimeError("rss unavailable")),
+                ),
+                runtime_settings=api_service.load_runtime_settings(
+                    {
+                        "JOB_REPOSITORY_BACKEND": "sqlalchemy",
+                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3-failed.db')}",
+                        "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                    }
+                ),
+                session_factory=session_factory,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "rss unavailable"):
+                service.resync_artist("artist-fail", days=14, trigger="manual")
+
+            refreshed_artist = artist_repository.get("artist-fail")
+            self.assertEqual(refreshed_artist.sync_status, SyncStatus.FAILED)
+            self.assertEqual(refreshed_artist.last_sync_error, "rss unavailable")
+            self.assertIsNotNone(refreshed_artist.last_sync_completed_at)
+
+    def test_catalog_resync_rejects_active_processing_artist(self):
+        with TemporaryDirectory() as temp_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase3-lock.db')}")
+            session_factory.create_schema()
+            artist_repository = SQLAlchemyArtistRepository(session_factory)
+            artist_repository.upsert(
+                Artist(
+                    spotify_id="artist-lock",
+                    name="Locked Artist",
+                    sync_status=SyncStatus.PROCESSING,
+                    last_sync_started_at=datetime(2026, 5, 20, 10, 0, 0),
+                )
+            )
+
+            service = api_service.create_phase3_catalog_service(
+                providers=Phase3Providers(
+                    followed_artists_lookup=lambda: [],
+                    channel_lookup=lambda artist: "UC_LOCKED",
+                    candidate_lookup=lambda artist, days: [],
+                ),
+                runtime_settings=api_service.load_runtime_settings(
+                    {
+                        "JOB_REPOSITORY_BACKEND": "sqlalchemy",
+                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3-lock.db')}",
+                        "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                        "ARTIST_SYNC_STALE_AFTER_SECONDS": "999999999",
+                    }
+                ),
+                session_factory=session_factory,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "Artist sync already in progress"):
+                service.resync_artist("artist-lock", days=14, trigger="manual")
+
+            runs = SQLAlchemyArtistSyncRunRepository(session_factory).list_for_artist("artist-lock")
+            candidates = SQLAlchemyCandidateRepository(session_factory).list_for_artist("artist-lock")
+            refreshed_artist = artist_repository.get("artist-lock")
+            self.assertEqual(len(runs), 0)
+            self.assertEqual(len(candidates), 0)
+            self.assertEqual(refreshed_artist.sync_status, SyncStatus.PROCESSING)
+            self.assertEqual(refreshed_artist.last_sync_started_at, datetime(2026, 5, 20, 10, 0, 0))
+
+    def test_catalog_resync_can_take_over_stale_processing_artist(self):
+        with TemporaryDirectory() as temp_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase3-stale.db')}")
+            session_factory.create_schema()
+            artist_repository = SQLAlchemyArtistRepository(session_factory)
+            artist_repository.upsert(
+                Artist(
+                    spotify_id="artist-stale",
+                    name="Stale Artist",
+                    sync_status=SyncStatus.PROCESSING,
+                    last_sync_started_at=datetime(2020, 1, 1, 0, 0, 0),
+                )
+            )
+
+            service = api_service.create_phase3_catalog_service(
+                providers=Phase3Providers(
+                    followed_artists_lookup=lambda: [],
+                    channel_lookup=lambda artist: "UC_STALE",
+                    candidate_lookup=lambda artist, days: [],
+                ),
+                runtime_settings=api_service.load_runtime_settings(
+                    {
+                        "JOB_REPOSITORY_BACKEND": "sqlalchemy",
+                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3-stale.db')}",
+                        "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                        "ARTIST_SYNC_STALE_AFTER_SECONDS": "1",
+                    }
+                ),
+                session_factory=session_factory,
+            )
+
+            result = service.resync_artist("artist-stale", days=14, trigger="manual")
+
+            refreshed_artist = artist_repository.get("artist-stale")
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(refreshed_artist.sync_status, SyncStatus.COMPLETED)
+            self.assertEqual(refreshed_artist.yt_channel_id, "UC_STALE")
+            self.assertGreater(refreshed_artist.last_sync_started_at, datetime(2020, 1, 1, 0, 0, 0))
+
+    def test_artist_finish_sync_does_not_overwrite_newer_processing_run(self):
+        with TemporaryDirectory() as temp_root:
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase3-token.db')}")
+            session_factory.create_schema()
+            artist_repository = SQLAlchemyArtistRepository(session_factory)
+            old_started_at = datetime(2026, 5, 20, 10, 0, 0)
+            new_started_at = datetime(2026, 5, 20, 10, 5, 0)
+            artist_repository.upsert(
+                Artist(
+                    spotify_id="artist-token",
+                    name="Token Artist",
+                    sync_status=SyncStatus.PROCESSING,
+                    last_sync_started_at=new_started_at,
+                )
+            )
+
+            finished = Artist(
+                spotify_id="artist-token",
+                name="Token Artist Old",
+                yt_channel_id="UC_OLD",
+                sync_status=SyncStatus.COMPLETED,
+                last_sync_started_at=old_started_at,
+                last_sync_completed_at=datetime(2026, 5, 20, 10, 1, 0),
+            )
+
+            self.assertFalse(artist_repository.try_finish_sync("artist-token", old_started_at, finished))
+            refreshed_artist = artist_repository.get("artist-token")
+            self.assertEqual(refreshed_artist.sync_status, SyncStatus.PROCESSING)
+            self.assertEqual(refreshed_artist.last_sync_started_at, new_started_at)
+            self.assertIsNone(refreshed_artist.yt_channel_id)
+
     def test_list_artists_supports_candidate_and_sync_sorting(self):
         with TemporaryDirectory() as temp_root:
             db_path = os.path.join(temp_root, "phase3-sort.db")
@@ -249,6 +392,42 @@ class Phase3CatalogTests(unittest.TestCase):
             self.assertEqual(response.status_code, 404)
             self.assertEqual(response.json()["error"]["code"], "artist_not_found")
             self.assertEqual(response.json()["error"]["message"], "Artist not found")
+
+    def test_v1_artist_resync_returns_409_when_sync_in_progress(self):
+        with TemporaryDirectory() as temp_root:
+            env = {
+                "DEEPSEEK_API_KEY": "test-key",
+                "DEEPSEEK_BASE_URL": "https://example.local",
+                "JOB_REPOSITORY_BACKEND": "sqlalchemy",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3.db')}",
+                "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                "ARTIST_SYNC_STALE_AFTER_SECONDS": "999999999",
+            }
+
+            with patch.dict(os.environ, env, clear=False):
+                app = api_service.create_app(
+                    phase3_providers=Phase3Providers(
+                        followed_artists_lookup=lambda: [],
+                        channel_lookup=lambda artist: "UC_BUSY",
+                        candidate_lookup=lambda artist, days: [],
+                    )
+                )
+                artist_repository = SQLAlchemyArtistRepository(app.state.session_factory)
+                artist_repository.upsert(
+                    Artist(
+                        spotify_id="artist-busy",
+                        name="Busy Artist",
+                        sync_status=SyncStatus.PROCESSING,
+                        last_sync_started_at=datetime(2026, 5, 20, 10, 0, 0),
+                    )
+                )
+                with TestClient(app) as client:
+                    response = client.post("/v1/artists/artist-busy/resync")
+
+            self.assertEqual(response.status_code, 409)
+            payload = response.json()
+            self.assertEqual(payload["error"]["code"], "artist_sync_already_in_progress")
+            self.assertEqual(payload["error"]["message"], "Artist sync already in progress")
 
     def test_alembic_head_creates_phase3_catalog_tables(self):
         with TemporaryDirectory() as temp_root:

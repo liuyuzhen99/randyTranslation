@@ -75,6 +75,7 @@ KNOWN_ENV_VARS: tuple[str, ...] = (
     "PHASE6_SERVICE_WORKER_POLL_SECONDS",
     "PHASE6_MAX_STAGE_ATTEMPTS",
     "PHASE6_RETRY_BACKOFF_BASE_SECONDS",
+    "ARTIST_SYNC_STALE_AFTER_SECONDS",
     "MEDIA_STORAGE_BACKEND",
     "MEDIA_TEMP_ROOT",
     "MEDIA_OUTPUT_ROOT",
@@ -161,6 +162,7 @@ class AppRuntimeSettings(BaseSettings):
     phase6_service_worker_poll_seconds: float = 1.0
     phase6_max_stage_attempts: int = 3
     phase6_retry_backoff_base_seconds: int = 30
+    artist_sync_stale_after_seconds: int = 1800
     media_storage_backend: str = "local"
     artifact_temp_retention_days: int = 1
     artifact_final_retention_days: int = 0
@@ -226,6 +228,14 @@ class AppRuntimeSettings(BaseSettings):
         val = int(v) if isinstance(v, str) else v
         if val < 1:
             raise RuntimeError("PHASE6_MAX_STAGE_ATTEMPTS must be at least 1.")
+        return val
+
+    @field_validator("artist_sync_stale_after_seconds", mode="before")
+    @classmethod
+    def _validate_artist_sync_stale_after_seconds(cls, v) -> int:
+        val = int(v) if isinstance(v, str) else v
+        if val < 1:
+            raise RuntimeError("ARTIST_SYNC_STALE_AFTER_SECONDS must be at least 1.")
         return val
 
     @field_validator("phase2_reconcile_max_missing_jobs", "phase2_reconcile_max_job_field_mismatches",
@@ -507,6 +517,7 @@ def create_phase3_catalog_service(
         artist_sync_run_repository=SQLAlchemyArtistSyncRunRepository(active_session_factory),
         candidate_repository=SQLAlchemyCandidateRepository(active_session_factory),
         providers=active_providers,
+        artist_sync_stale_after_seconds=settings.artist_sync_stale_after_seconds,
     )
 
 

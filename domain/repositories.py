@@ -27,6 +27,14 @@ class ArtistRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def try_begin_sync(self, spotify_id: str, started_at: datetime, stale_before: datetime) -> Artist | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def try_finish_sync(self, spotify_id: str, started_at: datetime, finished_artist: Artist) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
     def get(self, spotify_id: str) -> Optional[Artist]:
         raise NotImplementedError
 

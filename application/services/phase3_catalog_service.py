@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable
 
 from domain.entities import Artist, ArtistSyncRun, VideoCandidate
@@ -193,11 +193,13 @@ class CandidateCatalogService:
         artist_sync_run_repository: ArtistSyncRunRepository,
         candidate_repository: CandidateRepository,
         providers: Phase3Providers,
+        artist_sync_stale_after_seconds: int = 1800,
     ) -> None:
         self.artist_repository = artist_repository
         self.artist_sync_run_repository = artist_sync_run_repository
         self.candidate_repository = candidate_repository
         self.providers = providers
+        self.artist_sync_stale_after_seconds = artist_sync_stale_after_seconds
         self.artist_sync_service = ArtistSyncService(artist_repository, artist_sync_run_repository)
         self.channel_discovery_service = ChannelDiscoveryService(artist_repository)
         self.video_discovery_service = VideoDiscoveryService(candidate_repository)
@@ -298,19 +300,13 @@ class CandidateCatalogService:
             raise KeyError(artist_id)
 
         overall_started_at = utc_now()
-        in_progress_artist = Artist(
-            spotify_id=artist.spotify_id,
-            name=artist.name,
-            yt_channel_id=artist.yt_channel_id,
-            status=artist.status,
-            sync_status=SyncStatus.PROCESSING,
-            last_sync_started_at=overall_started_at,
-            last_sync_completed_at=artist.last_sync_completed_at,
-            last_sync_error=None,
-            last_channel_resolved_at=artist.last_channel_resolved_at,
-            last_discovery_at=artist.last_discovery_at,
+        in_progress_artist = self.artist_repository.try_begin_sync(
+            artist.spotify_id,
+            started_at=overall_started_at,
+            stale_before=overall_started_at - timedelta(seconds=self.artist_sync_stale_after_seconds),
         )
-        self.artist_repository.upsert(in_progress_artist)
+        if in_progress_artist is None:
+            raise RuntimeError("Artist sync already in progress")
 
         try:
             resolved_artist, channel_run = self._resolve_channel(
@@ -338,7 +334,11 @@ class CandidateCatalogService:
                 last_channel_resolved_at=resolved_artist.last_channel_resolved_at,
                 last_discovery_at=completed_at,
             )
-            self.artist_repository.upsert(updated_artist)
+            self.artist_repository.try_finish_sync(
+                updated_artist.spotify_id,
+                started_at=overall_started_at,
+                finished_artist=updated_artist,
+            )
             return {
                 "run_id": rss_run.run_id,
                 "artist_id": updated_artist.spotify_id,
@@ -363,7 +363,11 @@ class CandidateCatalogService:
                 last_channel_resolved_at=in_progress_artist.last_channel_resolved_at,
                 last_discovery_at=in_progress_artist.last_discovery_at,
             )
-            self.artist_repository.upsert(failed_artist)
+            self.artist_repository.try_finish_sync(
+                failed_artist.spotify_id,
+                started_at=overall_started_at,
+                finished_artist=failed_artist,
+            )
             raise
 
     def refresh_active_artists(

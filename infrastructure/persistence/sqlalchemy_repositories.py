@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from datetime import datetime
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, or_, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -22,7 +22,7 @@ from domain.entities import (
     VideoCandidate,
 )
 from domain.job_lifecycle import validate_job_transition
-from domain.enums import StageStatus
+from domain.enums import StageStatus, SyncStatus
 from domain.time_utils import utc_now
 from domain.repositories import (
     ArtifactRepository,
@@ -124,6 +124,52 @@ class SQLAlchemyArtistRepository(ArtistRepository):
             existing.last_sync_error = artist.last_sync_error
             existing.last_channel_resolved_at = artist.last_channel_resolved_at
             existing.last_discovery_at = artist.last_discovery_at
+
+    def try_begin_sync(self, spotify_id: str, started_at: datetime, stale_before: datetime) -> Artist | None:
+        with self.session_factory.session_scope() as session:
+            result = session.execute(
+                update(ArtistModel)
+                .where(
+                    ArtistModel.spotify_id == spotify_id,
+                    or_(
+                        ArtistModel.sync_status != SyncStatus.PROCESSING,
+                        ArtistModel.last_sync_started_at.is_(None),
+                        ArtistModel.last_sync_started_at <= stale_before,
+                    ),
+                )
+                .values(
+                    sync_status=SyncStatus.PROCESSING,
+                    last_sync_started_at=started_at,
+                    last_sync_error=None,
+                )
+            )
+            if result.rowcount != 1:
+                return None
+            row = session.get(ArtistModel, spotify_id)
+            return self._to_entity(row) if row is not None else None
+
+    def try_finish_sync(self, spotify_id: str, started_at: datetime, finished_artist: Artist) -> bool:
+        with self.session_factory.session_scope() as session:
+            result = session.execute(
+                update(ArtistModel)
+                .where(
+                    ArtistModel.spotify_id == spotify_id,
+                    ArtistModel.sync_status == SyncStatus.PROCESSING,
+                    ArtistModel.last_sync_started_at == started_at,
+                )
+                .values(
+                    name=finished_artist.name,
+                    yt_channel_id=finished_artist.yt_channel_id,
+                    status=finished_artist.status,
+                    sync_status=finished_artist.sync_status,
+                    last_sync_started_at=finished_artist.last_sync_started_at,
+                    last_sync_completed_at=finished_artist.last_sync_completed_at,
+                    last_sync_error=finished_artist.last_sync_error,
+                    last_channel_resolved_at=finished_artist.last_channel_resolved_at,
+                    last_discovery_at=finished_artist.last_discovery_at,
+                )
+            )
+            return result.rowcount == 1
 
     def get(self, spotify_id: str) -> Artist | None:
         with self.session_factory.session_scope() as session:
