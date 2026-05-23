@@ -243,6 +243,44 @@ class Phase4WorkflowTests(unittest.TestCase):
                 self.assertEqual(pipeline_item["render_job"]["job_id"], first_response.json()["task_id"])
                 self.assertEqual(pipeline_item["render_job"]["status"], "pending")
 
+    def test_render_requires_candidate_to_be_in_pipeline(self):
+        with TemporaryDirectory() as temp_root:
+            app = self._create_app(temp_root)
+
+            with TestClient(app) as client:
+                initial_queue = client.get("/v1/audit-queue").json()
+                candidate_id = initial_queue["items"][0]["candidate_id"]
+                candidate_repository = SQLAlchemyCandidateRepository(app.state.session_factory)
+                candidate = candidate_repository.get(candidate_id)
+                self.assertIsNotNone(candidate)
+                candidate.status = CandidateStatus.DISCOVERED
+                candidate_repository.upsert(candidate)
+
+                response = client.post(f"/v1/candidates/{candidate_id}/render")
+
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(
+                    response.json()["error"]["message"],
+                    "Candidate must be added to pipeline before render",
+                )
+
+    def test_render_requires_phase6_async_pipeline(self):
+        with TemporaryDirectory() as temp_root:
+            app = self._create_app(temp_root)
+            app.state.phase6_async_pipeline_services = None
+
+            with TestClient(app) as client:
+                initial_queue = client.get("/v1/audit-queue").json()
+                candidate_id = initial_queue["items"][0]["candidate_id"]
+
+                response = client.post(f"/v1/candidates/{candidate_id}/render")
+
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(
+                    response.json()["error"]["message"],
+                    "Phase 6 async pipeline is not enabled",
+                )
+
     def test_phase4_v1_error_envelope_and_request_id(self):
         with TemporaryDirectory() as temp_root:
             app = self._create_app(temp_root)

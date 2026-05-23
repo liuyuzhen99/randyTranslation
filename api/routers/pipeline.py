@@ -300,12 +300,10 @@ async def list_tasks(
 @router.post("/v1/candidates/{candidate_id}/render", response_model=TaskResponse)
 async def render_candidate(
     candidate_id: str,
-    background_tasks: BackgroundTasks,
     job_service=Depends(get_job_service),
     phase4_services=Depends(get_phase4_workflow_services),
     phase6_services=Depends(get_phase6_async_pipeline_services),
     outbox_dispatcher=Depends(get_outbox_dispatcher),
-    orchestrator=Depends(get_orchestrator),
 ):
     if phase4_services is None:
         raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
@@ -313,23 +311,22 @@ async def render_candidate(
         candidate = phase4_services.pipeline_service.support.get_candidate_or_raise(candidate_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Candidate not found") from exc
-    if candidate.status.value == "discovered":
-        phase4_services.pipeline_service.add_candidate(candidate_id, actor_id="frontend-user-1")
-        candidate = phase4_services.pipeline_service.support.get_candidate_or_raise(candidate_id)
+    if candidate.status == CandidateStatus.DISCOVERED:
+        raise HTTPException(status_code=409, detail="Candidate must be added to pipeline before render")
 
     existing_render_job = _serialize_render_job(candidate.candidate_id, job_service=job_service, phase4_services=phase4_services)
     if existing_render_job is not None and existing_render_job.get("status") in {JobStatus.PENDING.value, JobStatus.PROCESSING.value}:
         return {"task_id": existing_render_job["job_id"], "message": "候选视频已有渲染任务正在排队或执行，已返回现有任务 ID", "candidate_id": candidate.candidate_id}
 
+    if phase6_services is None:
+        raise HTTPException(status_code=503, detail="Phase 6 async pipeline is not enabled")
+
     job = job_service.create_job(candidate.title)
     _record_render_job(candidate.candidate_id, job.job_id, phase4_services=phase4_services, actor_id="frontend-user-1")
-    if phase6_services is not None:
-        command_service, _worker = phase6_services
-        command_service.enqueue_first_stage(job, candidate_id=candidate.candidate_id)
-        _dispatch_outbox_if_available(outbox_dispatcher)
-        return {"task_id": job.job_id, "message": "候选视频渲染任务已写入异步 pipeline，请稍后通过 ID 查询进度", "candidate_id": candidate.candidate_id}
-    background_tasks.add_task(orchestrator.run, job.job_id, candidate.title, candidate.candidate_id)
-    return {"task_id": job.job_id, "message": "候选视频渲染任务已启动，请稍后通过 ID 查询进度", "candidate_id": candidate.candidate_id}
+    command_service, _worker = phase6_services
+    command_service.enqueue_first_stage(job, candidate_id=candidate.candidate_id)
+    _dispatch_outbox_if_available(outbox_dispatcher)
+    return {"task_id": job.job_id, "message": "候选视频渲染任务已写入异步 pipeline，请稍后通过 ID 查询进度", "candidate_id": candidate.candidate_id}
 
 
 @router.post("/v1/candidates/{candidate_id}/pipeline", response_model=CandidatePipelineResponse)
