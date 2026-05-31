@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated
 
 from dotenv import load_dotenv
 from pydantic import field_validator, model_validator
@@ -12,7 +11,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from application.services.outbox_dispatcher import OutboxDispatcher
 from application.services.async_pipeline import AsyncPipelineCommandService, PipelineStageWorker
 from application.services.pipeline_stage_handlers import PipelineStageHandlers
-from application.services.phase8_vectors import HashingEmbeddingProvider
 from application.services.phase4_workflow_service import (
     Phase4WorkflowServices,
     build_phase4_workflow_services,
