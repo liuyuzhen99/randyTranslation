@@ -41,7 +41,7 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install fastapi==0.135.1 starlette==0.52.1 pydantic==2.12.5 uvicorn==0.41.0 httpx==0.28.1 SQLAlchemy==2.0.48 alembic==1.18.4 python-dotenv==1.2.2
+          pip install fastapi==0.135.1 starlette==0.52.1 pydantic==2.12.5 pydantic-settings==2.13.1 uvicorn==0.41.0 httpx==0.28.1 SQLAlchemy==2.0.48 alembic==1.18.4 python-dotenv==1.2.2
 
       - name: Run phase 0 config validation tests
         run: PYTHONPATH=. python -m unittest discover -s test -p "test_phase0_config_validation.py"
@@ -67,7 +67,7 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install fastapi==0.135.1 starlette==0.52.1 pydantic==2.12.5 uvicorn==0.41.0 httpx==0.28.1 SQLAlchemy==2.0.48 alembic==1.18.4 python-dotenv==1.2.2
+          pip install fastapi==0.135.1 starlette==0.52.1 pydantic==2.12.5 pydantic-settings==2.13.1 uvicorn==0.41.0 httpx==0.28.1 SQLAlchemy==2.0.48 alembic==1.18.4 python-dotenv==1.2.2
 
       - name: Run phase 0 baseline API compatibility tests
         run: PYTHONPATH=. python -m unittest discover -s test -p "test_phase0_api_baseline.py"
