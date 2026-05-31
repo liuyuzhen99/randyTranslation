@@ -63,14 +63,17 @@ class TencentCOSMediaStorage(MediaStorageService):
         content_type: str | None = None,
     ) -> StoredMediaObject:
         object_key = self.build_object_key(task_id, artifact_type, Path(local_path).name)
-        self.client.upload_file(
-            Bucket=self.bucket,
-            LocalFilePath=local_path,
-            Key=object_key,
-            PartSize=8,
-            MAXThread=8,
-            EnableMD5=False,
-        )
+        try:
+            self.client.upload_file(
+                Bucket=self.bucket,
+                LocalFilePath=local_path,
+                Key=object_key,
+                PartSize=8,
+                MAXThread=8,
+                EnableMD5=False,
+            )
+        except Exception:
+            self._upload_artifact_fallback(local_path=local_path, object_key=object_key)
         stat = os.stat(local_path)
         return StoredMediaObject(
             artifact_type=artifact_type,
@@ -83,6 +86,24 @@ class TencentCOSMediaStorage(MediaStorageService):
             checksum_sha256=self._sha256(local_path),
             created_at=utc_now(),
         )
+
+    def _upload_artifact_fallback(self, *, local_path: str, object_key: str) -> None:
+        if hasattr(self.client, "put_object_from_local_file"):
+            self.client.put_object_from_local_file(
+                Bucket=self.bucket,
+                LocalFilePath=local_path,
+                Key=object_key,
+            )
+            return
+        if hasattr(self.client, "put_object"):
+            with open(local_path, "rb") as file_obj:
+                self.client.put_object(
+                    Bucket=self.bucket,
+                    Body=file_obj,
+                    Key=object_key,
+                )
+            return
+        raise RuntimeError("COS client does not support upload fallback methods.")
 
     def download_artifact(self, object_uri: str, destination_path: str) -> str:
         object_key = self._key_for_uri(object_uri)

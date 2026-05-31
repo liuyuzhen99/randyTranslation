@@ -27,6 +27,14 @@ class ArtistRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def try_begin_sync(self, spotify_id: str, started_at: datetime, stale_before: datetime) -> Artist | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def try_finish_sync(self, spotify_id: str, started_at: datetime, finished_artist: Artist) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
     def get(self, spotify_id: str) -> Optional[Artist]:
         raise NotImplementedError
 
@@ -116,6 +124,10 @@ class PipelineStageExecutionRepository(ABC):
 
     @abstractmethod
     def list_for_candidate(self, candidate_id: str) -> list[PipelineStageExecution]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_due_retries(self, now: datetime, limit: int = 100) -> list[PipelineStageExecution]:
         raise NotImplementedError
 
 
@@ -208,6 +220,14 @@ class ArtifactRepository(ABC):
 class VectorRepository(ABC):
     @abstractmethod
     def upsert(self, record: VectorRecord) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_by_namespace(self, namespace: str, limit: int = 1000, offset: int = 0) -> list[VectorRecord]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def count_by_namespace(self, namespace: str) -> int:
         raise NotImplementedError
 
     @abstractmethod

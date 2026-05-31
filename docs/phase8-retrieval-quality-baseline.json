@@ -1,0 +1,26 @@
+[
+  {
+    "namespace": "translation_memory",
+    "query": "gritty cadence translation",
+    "expected_ids": [
+      "f092b35b-134e-e25e-c1fa-2d4b771f861c"
+    ],
+    "limit": 3
+  },
+  {
+    "namespace": "translation_memory",
+    "query": "smooth chorus bilingual subtitle",
+    "expected_ids": [
+      "bcb03348-9a41-9e9f-7679-0127a9c65c89"
+    ],
+    "limit": 3
+  },
+  {
+    "namespace": "audit_style_memory",
+    "query": "dense wordplay high energy",
+    "expected_ids": [
+      "d40f965c-65c7-8e30-622e-2d8bf8ecd5da"
+    ],
+    "limit": 3
+  }
+]

@@ -12,6 +12,9 @@ from sqlalchemy import create_engine, inspect
 
 import api.service as api_service
 from application.services.phase3_catalog_service import CandidateDiscoveryPayload, Phase3Providers
+from domain.entities import ArtifactRecord
+from domain.enums import CandidateStatus
+from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyCandidateRepository
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemySubtitleRepository
 
 
@@ -50,6 +53,11 @@ class Phase4WorkflowTests(unittest.TestCase):
                 Artist(spotify_id="artist-1", name="Doechii")
             )
         app.state.phase3_catalog_service.resync_artist("artist-1", trigger="manual")
+        candidate = app.state.phase3_catalog_service.candidate_repository.list_for_artist("artist-1")[0]
+        app.state.phase4_workflow_services.pipeline_service.add_candidate(
+            candidate.candidate_id,
+            actor_id="test-setup",
+        )
         return app
 
     def test_phase4_review_workflow_endpoints(self):
@@ -88,6 +96,22 @@ class Phase4WorkflowTests(unittest.TestCase):
                     current_item = next(
                         item for item in queue_payload["items"] if item["review_type"] == expected_type
                     )
+                    if expected_type == "final_asset_approval":
+                        app.state.artifact_repository.upsert(
+                            ArtifactRecord(
+                                artifact_id=f"candidate:{candidate_id}:final_video:v1",
+                                owner_type="candidate",
+                                owner_id=candidate_id,
+                                artifact_type="final_video",
+                                object_uri="local://phase4/final.mp4",
+                                object_key="phase4/final.mp4",
+                                bucket="phase4-test",
+                                storage_provider="local",
+                                candidate_id=candidate_id,
+                                size_bytes=128,
+                                checksum_sha256="phase4-checksum",
+                            )
+                        )
                     approve_response = client.post(
                         f"/v1/reviews/{current_item['review_id']}/approve",
                         headers={"X-Actor-Id": "frontend-tester"},
@@ -105,11 +129,7 @@ class Phase4WorkflowTests(unittest.TestCase):
 
                 pipeline = client.get("/v1/pipeline")
                 self.assertEqual(pipeline.status_code, 200)
-                pipeline_item = pipeline.json()["items"][0]
-                self.assertEqual(pipeline_item["workflow_status"], "accepted")
-                self.assertEqual(pipeline_item["current_stage"], "completed")
-                self.assertEqual(pipeline_item["translation"]["status"], "approved")
-                self.assertNotIn("current_owner_role", pipeline_item)
+                self.assertEqual(pipeline.json()["pagination"]["total"], 0)
 
                 audit_log = client.get(
                     "/v1/audit-log",
@@ -130,6 +150,136 @@ class Phase4WorkflowTests(unittest.TestCase):
                 self.assertEqual(library_before.status_code, 200)
                 self.assertEqual(library_before.json()["pagination"]["total"], 1)
                 self.assertEqual(library_before.json()["items"][0]["curation_status"], "accepted")
+
+    def test_final_asset_approval_requires_ready_final_video_artifact(self):
+        with TemporaryDirectory() as temp_root:
+            app = self._create_app(temp_root)
+
+            with TestClient(app) as client:
+                expected_types = (
+                    "transcript_review",
+                    "taste_audit",
+                    "manual_review",
+                    "translation_review",
+                    "final_asset_approval",
+                )
+                final_item = None
+                for expected_type in expected_types:
+                    queue_payload = client.get("/v1/audit-queue").json()
+                    current_item = next(
+                        item for item in queue_payload["items"] if item["review_type"] == expected_type
+                    )
+                    if expected_type == "final_asset_approval":
+                        final_item = current_item
+                        break
+                    approve_response = client.post(
+                        f"/v1/reviews/{current_item['review_id']}/approve",
+                        headers={"X-Actor-Id": "frontend-tester"},
+                        json={"expected_version": current_item["version"], "comment": "approved"},
+                    )
+                    self.assertEqual(approve_response.status_code, 200)
+
+                self.assertIsNotNone(final_item)
+                blocked_response = client.post(
+                    f"/v1/reviews/{final_item['review_id']}/approve",
+                    headers={"X-Actor-Id": "frontend-tester"},
+                    json={"expected_version": final_item["version"], "comment": "approved"},
+                )
+                self.assertEqual(blocked_response.status_code, 409)
+                self.assertEqual(
+                    blocked_response.json()["error"]["message"],
+                    "Final asset approval requires a ready final_video artifact.",
+                )
+
+    def test_candidate_can_be_manually_added_to_pipeline(self):
+        with TemporaryDirectory() as temp_root:
+            app = self._create_app(temp_root)
+
+            with TestClient(app) as client:
+                initial_queue = client.get("/v1/audit-queue").json()
+                candidate_id = initial_queue["items"][0]["candidate_id"]
+                candidate_repository = SQLAlchemyCandidateRepository(app.state.session_factory)
+                candidate = candidate_repository.get(candidate_id)
+                self.assertIsNotNone(candidate)
+                candidate.status = CandidateStatus.DISCOVERED
+                candidate_repository.upsert(candidate)
+
+                response = client.post(
+                    f"/v1/candidates/{candidate_id}/pipeline",
+                    headers={"X-Actor-Id": "frontend-tester"},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["candidate_status"], "downloading")
+                self.assertEqual(response.json()["review_type"], "transcript_review")
+
+    def test_render_job_is_reused_and_visible_in_pipeline(self):
+        class StubCommandService:
+            def __init__(self):
+                self.enqueued_job_ids = []
+
+            def enqueue_first_stage(self, job, candidate_id=None):
+                self.enqueued_job_ids.append((job.job_id, candidate_id))
+
+        with TemporaryDirectory() as temp_root:
+            app = self._create_app(temp_root)
+            command_service = StubCommandService()
+            app.state.phase6_async_pipeline_services = (command_service, None)
+
+            with TestClient(app) as client:
+                initial_queue = client.get("/v1/audit-queue").json()
+                candidate_id = initial_queue["items"][0]["candidate_id"]
+
+                first_response = client.post(f"/v1/candidates/{candidate_id}/render")
+                second_response = client.post(f"/v1/candidates/{candidate_id}/render")
+
+                self.assertEqual(first_response.status_code, 200)
+                self.assertEqual(second_response.status_code, 200)
+                self.assertEqual(first_response.json()["task_id"], second_response.json()["task_id"])
+                self.assertEqual(len(command_service.enqueued_job_ids), 1)
+
+                pipeline_item = client.get("/v1/pipeline").json()["items"][0]
+                self.assertEqual(pipeline_item["candidate_id"], candidate_id)
+                self.assertEqual(pipeline_item["render_job"]["job_id"], first_response.json()["task_id"])
+                self.assertEqual(pipeline_item["render_job"]["status"], "pending")
+
+    def test_render_requires_candidate_to_be_in_pipeline(self):
+        with TemporaryDirectory() as temp_root:
+            app = self._create_app(temp_root)
+
+            with TestClient(app) as client:
+                initial_queue = client.get("/v1/audit-queue").json()
+                candidate_id = initial_queue["items"][0]["candidate_id"]
+                candidate_repository = SQLAlchemyCandidateRepository(app.state.session_factory)
+                candidate = candidate_repository.get(candidate_id)
+                self.assertIsNotNone(candidate)
+                candidate.status = CandidateStatus.DISCOVERED
+                candidate_repository.upsert(candidate)
+
+                response = client.post(f"/v1/candidates/{candidate_id}/render")
+
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(
+                    response.json()["error"]["message"],
+                    "Candidate must be added to pipeline before render",
+                )
+
+    def test_render_requires_phase6_async_pipeline(self):
+        with TemporaryDirectory() as temp_root:
+            app = self._create_app(temp_root)
+            app.state.phase6_async_pipeline_services = None
+
+            with TestClient(app) as client:
+                initial_queue = client.get("/v1/audit-queue").json()
+                candidate_id = initial_queue["items"][0]["candidate_id"]
+
+                response = client.post(f"/v1/candidates/{candidate_id}/render")
+
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(
+                    response.json()["error"]["message"],
+                    "Phase 6 async pipeline is not enabled",
+                )
 
     def test_phase4_v1_error_envelope_and_request_id(self):
         with TemporaryDirectory() as temp_root:
@@ -220,6 +370,16 @@ class Phase4WorkflowTests(unittest.TestCase):
                 self.assertEqual(len(subtitles), 2)
                 self.assertEqual(subtitles[0].zh_text, "又到了星期天")
                 self.assertEqual(subtitles[1].zh_text, "我需要你的光")
+
+                detail_response = client.get(f"/v1/candidates/{candidate_id}/workflow-detail")
+                self.assertEqual(detail_response.status_code, 200)
+                detail = detail_response.json()
+                self.assertEqual(detail["transcript"]["segment_count"], 2)
+                self.assertEqual(detail["transcript"]["segments"][0]["text"], "Sunday again")
+                self.assertEqual(detail["taste_audit"]["score"], 0.91)
+                self.assertEqual(detail["taste_audit"]["key_lyrics"], ["Sunday again"])
+                self.assertEqual(detail["translation"]["line_count"], 2)
+                self.assertEqual(detail["translation"]["lines"][0]["translated_text"], "又到了星期天")
 
                 queue_after_translation = client.get("/v1/audit-queue").json()["items"]
                 self.assertEqual(queue_after_translation[0]["review_type"], "final_asset_approval")

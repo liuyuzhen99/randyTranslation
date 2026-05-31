@@ -43,6 +43,7 @@ class SyncStatus(str, Enum):
 
 class CandidateStatus(str, Enum):
     DISCOVERED = "discovered"
+    DOWNLOADING = "downloading"
     PENDING_REVIEW = "pending_review"
     ACCEPTED = "accepted"
     REJECTED = "rejected"

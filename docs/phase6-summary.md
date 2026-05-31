@@ -188,9 +188,21 @@ workers/phase6_worker.py
 python workers/phase6_worker.py --declare-only
 python workers/phase6_worker.py --queue pipeline.command
 python workers/phase6_worker.py --queue pipeline.stage.transcribe
+python workers/phase6_worker.py --queue pipeline.stage.transcribe --instances 4 --prefetch 1
+python workers/phase6_worker.py --schedule-retries --retry-limit 100
 ```
 
 `--declare-only` 只声明拓扑，不需要 DB；正式消费需要 `DATABASE_URL` 和 `PHASE6_ASYNC_PIPELINE_ENABLED=true`。
+
+CLI 现在支持 `--instances` 在同一个队列上启动多个 worker 进程，也支持 `--prefetch` 控制单实例并发拉取。`--schedule-retries` 是 DB-backed delayed retry scheduler 的一次性运行入口，可由 launchd 或 cron 每分钟触发。
+
+新增运行手册：
+
+```text
+docs/phase6-worker-runbook.md
+```
+
+手册覆盖非 Docker 场景下的环境变量、拓扑声明、单队列 worker、多实例 worker、bounded smoke drain、DB retry scheduler 和 launchd 示例。
 
 新增依赖：
 
@@ -257,6 +269,35 @@ application/services/pipeline_stage_handlers.py
 - `render` 调用 producer burn/mux 视频，上传 final video 和 subtitle artifact，并写 artifact metadata。
 
 这意味着 Phase 6 已经有真实业务 handler 框架，且人工审核点不是隐藏在 worker 内部自动跳过，而是会明确暂停，等待前端审核动作恢复。
+
+### 8. DB retry scheduler
+
+本轮补齐了正式 delayed delivery 机制中的 DB scheduler 方案：
+
+```text
+application/services/retry_scheduler.py
+```
+
+worker 处理失败但未达到最大次数时，只把当前 execution 写成 `retry_scheduled`，并设置 `next_retry_at`，不会立刻把 retry message 写入 outbox。scheduler 扫描到期记录后才创建下一次 attempt 的 outbox message，并清空旧 execution 的 `next_retry_at`，避免 scheduler 重复投递。
+
+这让重试延迟由数据库可观测字段控制，不依赖 RabbitMQ delayed exchange 插件，也不需要 TTL retry queue。
+
+### 9. Phase 7 observability 接入
+
+新增：
+
+```text
+application/services/phase7_observability.py
+infrastructure/messaging/rabbitmq_observability.py
+GET /internal/phase7/observability
+```
+
+当前 snapshot 包含：
+
+- `queue_depth`：按 Phase 6 topology 读取 RabbitMQ queue message count。
+- `dlq_count`：读取 `pipeline.dlq` 当前深度。
+- `stage_latency_seconds`：从 `pipeline_stage_executions.locked_at/completed_at` 计算 stage count、avg、p95。
+- `stage_status_counts`：按 stage/status 聚合 DB execution 状态。
 
 ## 四、为什么代码这样写
 
@@ -388,20 +429,19 @@ transcribe_queue_messages: 1
 
 ## 六、当前限制和后续建议
 
-本轮完成的是 Phase 6 的可靠异步基础、RabbitMQ consumer loop、真实 stage handler 框架和前端 pipeline worker 状态联调，但还不是最终生产 worker 集群：
+本轮完成的是 Phase 6 的可靠异步基础、RabbitMQ consumer loop、真实 stage handler 框架、DB retry scheduler、worker 多实例运行方式、Phase 7 observability snapshot 和前端 pipeline worker 状态联调，但还不是最终生产 worker 集群：
 
 - `audit` handler 当前只完成 workflow 接入和自动通过语义，还没有真正调用 AI auditor/RAG 打分。
-- 还没有 Docker Compose RabbitMQ 服务定义和 CI 级真实 broker 集成测试。
-- retry scheduler 目前通过 outbox 写出 retry message，后续需要结合 RabbitMQ delayed exchange、TTL queue 或调度器按 `next_retry_at` 投递。
-- worker 还没有并发进程管理、优雅关闭、长期运行监控和 launchd/container runbook。
+- 真实 RabbitMQ + PostgreSQL + worker 集成测试已经补齐为 opt-in 测试，默认不会在无外部服务的本地/CI 环境运行。
+- retry delayed delivery 采用 DB scheduler 方案，后续可按生产运维偏好替换为 RabbitMQ delayed exchange 或 TTL retry queue。
+- worker 已支持多进程实例和 launchd runbook；优雅关闭、长期运行健康检查和 dashboard 仍建议在 Phase 7 继续强化。
 
 建议 Phase 6 下一步继续做：
 
 1. 把 AI auditor/RAG 接入 `audit` handler，替换当前自动通过占位逻辑。
-2. 增加 Docker Compose RabbitMQ + PostgreSQL + worker 的集成测试。
-3. 为 retry scheduler 增加 delayed exchange / TTL queue / DB scheduler 之一。
-4. 为 worker CLI 增加并发实例运行方式和 launchd / container runbook。
-5. 把 queue depth、stage latency、DLQ count 接入 Phase 7 observability。
+2. 在 CI/CD 中提供可选 RabbitMQ + PostgreSQL 服务后启用 opt-in 集成测试。
+3. 为 `/internal/phase7/observability` 增加 Prometheus/OpenTelemetry exporter。
+4. 为 worker 增加健康检查、优雅关闭和 per-stage dashboard。
 
 ## 七、最终结论
 
@@ -416,7 +456,9 @@ Phase 6 已开始并完成第一批核心交付：
 - RabbitMQ topology declaration
 - RabbitMQ worker consumer loop
 - worker CLI
+- worker CLI 多实例运行和 DB retry scheduler
 - 本机 RabbitMQ round-trip smoke
+- RabbitMQ + PostgreSQL + worker opt-in 集成测试
 - download/transcribe/audit/manual_review/translate/translation_review/render stage handler 框架
 - manual review / translation review 暂停 gate
 - 人工审核 approve 后恢复 Phase 6 worker
@@ -424,5 +466,6 @@ Phase 6 已开始并完成第一批核心交付：
 - 前端 Pipeline worker badge/detail 联调
 - API async mode flag
 - Phase6 单元测试和 Phase0-5 回归
+- Phase7 queue depth / stage latency / DLQ count observability snapshot
 
 系统现在已经具备接入 RabbitMQ worker 的可靠基础，可以继续推进真实 consumer loop 和 stage handler 拆分。

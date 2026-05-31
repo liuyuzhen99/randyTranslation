@@ -269,6 +269,7 @@ class OutboxModel(Base):
     __table_args__ = (
         UniqueConstraint("dedupe_key", name="uq_outbox_dedupe_key"),
         Index("ix_outbox_status", "status"),
+        Index("ix_outbox_status_event_id", "status", "event_id"),
         Index("ix_outbox_correlation_id", "correlation_id"),
     )
 

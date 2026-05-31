@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Iterable, Optional
 
 from domain.entities import Artist, Job, OutboxEvent, Subtitle, VectorRecord, Video
-from domain.enums import JobStatus
+from domain.enums import JobStatus, SyncStatus
 from domain.repositories import (
     ArtistRepository,
     JobRepository,
@@ -43,10 +44,28 @@ class _SQLiteRepositoryMixin:
                     spotify_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     yt_channel_id TEXT,
-                    status TEXT DEFAULT 'active'
+                    status TEXT DEFAULT 'active',
+                    sync_status TEXT DEFAULT 'pending',
+                    last_sync_started_at TEXT,
+                    last_sync_completed_at TEXT,
+                    last_sync_error TEXT,
+                    last_channel_resolved_at TEXT,
+                    last_discovery_at TEXT
                 )
                 """
             )
+            for column, definition in (
+                ("sync_status", "TEXT DEFAULT 'pending'"),
+                ("last_sync_started_at", "TEXT"),
+                ("last_sync_completed_at", "TEXT"),
+                ("last_sync_error", "TEXT"),
+                ("last_channel_resolved_at", "TEXT"),
+                ("last_discovery_at", "TEXT"),
+            ):
+                try:
+                    cursor.execute(f"ALTER TABLE artists ADD COLUMN {column} {definition}")
+                except sqlite3.OperationalError:
+                    pass
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS videos (
@@ -113,32 +132,150 @@ class SQLiteArtistRepository(_SQLiteRepositoryMixin, ArtistRepository):
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO artists (spotify_id, name, yt_channel_id, status)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO artists (
+                    spotify_id, name, yt_channel_id, status, sync_status,
+                    last_sync_started_at, last_sync_completed_at, last_sync_error,
+                    last_channel_resolved_at, last_discovery_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(spotify_id) DO UPDATE SET
                     name=excluded.name,
                     yt_channel_id=excluded.yt_channel_id,
-                    status=excluded.status
+                    status=excluded.status,
+                    sync_status=excluded.sync_status,
+                    last_sync_started_at=excluded.last_sync_started_at,
+                    last_sync_completed_at=excluded.last_sync_completed_at,
+                    last_sync_error=excluded.last_sync_error,
+                    last_channel_resolved_at=excluded.last_channel_resolved_at,
+                    last_discovery_at=excluded.last_discovery_at
                 """,
-                (artist.spotify_id, artist.name, artist.yt_channel_id, artist.status),
+                (
+                    artist.spotify_id,
+                    artist.name,
+                    artist.yt_channel_id,
+                    artist.status,
+                    artist.sync_status.value,
+                    self._iso(artist.last_sync_started_at),
+                    self._iso(artist.last_sync_completed_at),
+                    artist.last_sync_error,
+                    self._iso(artist.last_channel_resolved_at),
+                    self._iso(artist.last_discovery_at),
+                ),
             )
+
+    def try_begin_sync(self, spotify_id: str, started_at: datetime, stale_before: datetime) -> Artist | None:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE artists
+                SET sync_status=?, last_sync_started_at=?, last_sync_error=NULL
+                WHERE spotify_id=?
+                  AND (
+                    sync_status != ?
+                    OR last_sync_started_at IS NULL
+                    OR last_sync_started_at <= ?
+                  )
+                """,
+                (
+                    SyncStatus.PROCESSING.value,
+                    self._iso(started_at),
+                    spotify_id,
+                    SyncStatus.PROCESSING.value,
+                    self._iso(stale_before),
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = conn.execute(
+                """
+                SELECT spotify_id, name, yt_channel_id, status, sync_status,
+                       last_sync_started_at, last_sync_completed_at, last_sync_error,
+                       last_channel_resolved_at, last_discovery_at
+                FROM artists WHERE spotify_id=?
+                """,
+                (spotify_id,),
+            ).fetchone()
+            return self._artist_from_row(row) if row else None
+
+    def try_finish_sync(self, spotify_id: str, started_at: datetime, finished_artist: Artist) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE artists
+                SET name=?, yt_channel_id=?, status=?, sync_status=?,
+                    last_sync_started_at=?, last_sync_completed_at=?, last_sync_error=?,
+                    last_channel_resolved_at=?, last_discovery_at=?
+                WHERE spotify_id=?
+                  AND sync_status=?
+                  AND last_sync_started_at=?
+                """,
+                (
+                    finished_artist.name,
+                    finished_artist.yt_channel_id,
+                    finished_artist.status,
+                    finished_artist.sync_status.value,
+                    self._iso(finished_artist.last_sync_started_at),
+                    self._iso(finished_artist.last_sync_completed_at),
+                    finished_artist.last_sync_error,
+                    self._iso(finished_artist.last_channel_resolved_at),
+                    self._iso(finished_artist.last_discovery_at),
+                    spotify_id,
+                    SyncStatus.PROCESSING.value,
+                    self._iso(started_at),
+                ),
+            )
+            return cursor.rowcount == 1
 
     def get(self, spotify_id: str) -> Optional[Artist]:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT spotify_id, name, yt_channel_id, status FROM artists WHERE spotify_id=?",
+                """
+                SELECT spotify_id, name, yt_channel_id, status, sync_status,
+                       last_sync_started_at, last_sync_completed_at, last_sync_error,
+                       last_channel_resolved_at, last_discovery_at
+                FROM artists WHERE spotify_id=?
+                """,
                 (spotify_id,),
             ).fetchone()
             if not row:
                 return None
-            return Artist(**dict(row))
+            return self._artist_from_row(row)
 
     def list_all(self) -> list[Artist]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT spotify_id, name, yt_channel_id, status FROM artists ORDER BY name ASC"
+                """
+                SELECT spotify_id, name, yt_channel_id, status, sync_status,
+                       last_sync_started_at, last_sync_completed_at, last_sync_error,
+                       last_channel_resolved_at, last_discovery_at
+                FROM artists ORDER BY name ASC
+                """
             ).fetchall()
-            return [Artist(**dict(row)) for row in rows]
+            return [self._artist_from_row(row) for row in rows]
+
+    @staticmethod
+    def _iso(value: datetime | None) -> str | None:
+        return value.isoformat() if value is not None else None
+
+    @staticmethod
+    def _datetime(value: str | None) -> datetime | None:
+        return datetime.fromisoformat(value) if value else None
+
+    @classmethod
+    def _artist_from_row(cls, row) -> Artist:
+        data = dict(row)
+        return Artist(
+            spotify_id=data["spotify_id"],
+            name=data["name"],
+            yt_channel_id=data["yt_channel_id"],
+            status=data["status"],
+            sync_status=SyncStatus(data.get("sync_status") or SyncStatus.PENDING.value),
+            last_sync_started_at=cls._datetime(data.get("last_sync_started_at")),
+            last_sync_completed_at=cls._datetime(data.get("last_sync_completed_at")),
+            last_sync_error=data.get("last_sync_error"),
+            last_channel_resolved_at=cls._datetime(data.get("last_channel_resolved_at")),
+            last_discovery_at=cls._datetime(data.get("last_discovery_at")),
+        )
 
 
 class SQLiteVideoRepository(_SQLiteRepositoryMixin, VideoRepository):
@@ -324,8 +461,35 @@ class SQLiteVectorRepository(_SQLiteRepositoryMixin, VectorRepository):
                     text=excluded.text,
                     metadata_json=excluded.metadata_json
                 """,
-                (record.vector_id, record.namespace, record.text, str(record.metadata)),
+                (
+                    record.vector_id,
+                    record.namespace,
+                    record.text,
+                    json.dumps(record.metadata, ensure_ascii=False, sort_keys=True),
+                ),
             )
+
+    def list_by_namespace(self, namespace: str, limit: int = 1000, offset: int = 0) -> list[VectorRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT vector_id, namespace, text, metadata_json
+                FROM vectors
+                WHERE namespace=?
+                ORDER BY vector_id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (namespace, limit, offset),
+            ).fetchall()
+            return [self._record_from_row(row) for row in rows]
+
+    def count_by_namespace(self, namespace: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM vectors WHERE namespace=?",
+                (namespace,),
+            ).fetchone()
+            return int(row["count"])
 
     def search(self, namespace: str, text: str, limit: int = 5) -> list[VectorRecord]:
         # Temporary adapter: lexical LIKE search to preserve abstraction until Qdrant migration.
@@ -340,12 +504,17 @@ class SQLiteVectorRepository(_SQLiteRepositoryMixin, VectorRepository):
                 """,
                 (namespace, f"%{text}%", limit),
             ).fetchall()
-            return [
-                VectorRecord(
-                    vector_id=row["vector_id"],
-                    namespace=row["namespace"],
-                    text=row["text"],
-                    metadata={"raw": row["metadata_json"]},
-                )
-                for row in rows
-            ]
+            return [self._record_from_row(row) for row in rows]
+
+    @staticmethod
+    def _record_from_row(row) -> VectorRecord:
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except json.JSONDecodeError:
+            metadata = {"raw": row["metadata_json"]}
+        return VectorRecord(
+            vector_id=row["vector_id"],
+            namespace=row["namespace"],
+            text=row["text"],
+            metadata=metadata,
+        )

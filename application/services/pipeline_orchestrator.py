@@ -133,8 +133,13 @@ class PipelineOrchestrator:
         if self.shadow_write_service is not None:
             try:
                 self.shadow_write_service.record_job_update(job, updated_job)
-            except Exception:
-                logger.exception("Phase 2 shadow-write failed during job update for %s", job.job_id)
+            except Exception as exc:
+                logger.error(
+                    "event=shadow_write_failure op=job_updated job_id=%s error=%s",
+                    job.job_id,
+                    exc,
+                    exc_info=True,
+                )
         return updated_job
 
     def _record_artifact(self, job: Job, stored_object, candidate_id: str | None = None) -> None:

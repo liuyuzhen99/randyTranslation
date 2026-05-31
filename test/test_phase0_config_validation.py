@@ -10,6 +10,7 @@ from api.config import (
     create_phase2_reconcile_service,
     create_phase2_shadow_write_service,
     create_sqlalchemy_session_factory,
+    create_vector_repository,
     load_runtime_settings,
     validate_startup_env,
 )
@@ -19,7 +20,7 @@ from application.services.phase2_shadow_write_service import Phase2ShadowWriteSe
 from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyJobRepository
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemySessionFactory
-from infrastructure.persistence.sqlite_repositories import SQLiteJobRepository
+from infrastructure.persistence.sqlite_repositories import SQLiteJobRepository, SQLiteVectorRepository
 
 
 class Phase0ConfigValidationTests(unittest.TestCase):
@@ -51,8 +52,19 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         self.assertEqual(settings.phase2_reconcile_max_outbox_payload_mismatches, 0)
         self.assertFalse(settings.phase2_outbox_dispatch_enabled)
         self.assertFalse(settings.phase6_async_pipeline_enabled)
+        self.assertTrue(settings.phase6_service_worker_enabled)
+        self.assertEqual(settings.phase6_service_worker_poll_seconds, 1.0)
         self.assertEqual(settings.phase6_max_stage_attempts, 3)
         self.assertEqual(settings.phase6_retry_backoff_base_seconds, 30)
+        self.assertEqual(settings.vector_repository_backend, "sqlite")
+        self.assertEqual(settings.vector_embedding_provider, "bge")
+        self.assertEqual(settings.vector_embedding_dimension, 1024)
+        self.assertEqual(settings.qdrant_collection_prefix, "")
+        self.assertEqual(settings.phase9_cutover_read_source, "legacy")
+        self.assertFalse(settings.phase9_schema_freeze_enabled)
+        self.assertTrue(settings.phase9_rollback_enabled)
+        self.assertEqual(settings.phase9_stability_window_days, 7)
+        self.assertFalse(settings.phase9_shadow_traffic_enabled)
 
     def test_load_runtime_settings_reads_reconcile_report_path(self):
         settings = load_runtime_settings(
@@ -124,6 +136,54 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             load_runtime_settings({"JOB_REPOSITORY_BACKEND": "redis"})
 
+    def test_load_runtime_settings_reads_phase8_vector_settings(self):
+        settings = load_runtime_settings(
+            {
+                "VECTOR_REPOSITORY_BACKEND": "qdrant",
+                "VECTOR_EMBEDDING_PROVIDER": "hashing",
+                "VECTOR_EMBEDDING_DIMENSION": "64",
+                "QDRANT_COLLECTION_PREFIX": "staging",
+            }
+        )
+
+        self.assertEqual(settings.vector_repository_backend, "qdrant")
+        self.assertEqual(settings.vector_embedding_provider, "hashing")
+        self.assertEqual(settings.vector_embedding_dimension, 64)
+        self.assertEqual(settings.qdrant_collection_prefix, "staging")
+
+    def test_load_runtime_settings_rejects_invalid_embedding_provider(self):
+        with self.assertRaises(RuntimeError):
+            load_runtime_settings({"VECTOR_EMBEDDING_PROVIDER": "openai"})
+
+    def test_load_runtime_settings_rejects_invalid_vector_backend(self):
+        with self.assertRaises(RuntimeError):
+            load_runtime_settings({"VECTOR_REPOSITORY_BACKEND": "chroma"})
+
+    def test_load_runtime_settings_rejects_too_small_vector_dimension(self):
+        with self.assertRaises(RuntimeError):
+            load_runtime_settings({"VECTOR_EMBEDDING_DIMENSION": "4"})
+
+    def test_load_runtime_settings_reads_phase9_cutover_controls(self):
+        settings = load_runtime_settings(
+            {
+                "PHASE9_CUTOVER_READ_SOURCE": "postgres",
+                "PHASE9_SCHEMA_FREEZE_ENABLED": "true",
+                "PHASE9_ROLLBACK_ENABLED": "false",
+                "PHASE9_STABILITY_WINDOW_DAYS": "14",
+                "PHASE9_SHADOW_TRAFFIC_ENABLED": "yes",
+            }
+        )
+
+        self.assertEqual(settings.phase9_cutover_read_source, "postgres")
+        self.assertTrue(settings.phase9_schema_freeze_enabled)
+        self.assertFalse(settings.phase9_rollback_enabled)
+        self.assertEqual(settings.phase9_stability_window_days, 14)
+        self.assertTrue(settings.phase9_shadow_traffic_enabled)
+
+    def test_load_runtime_settings_rejects_invalid_phase9_read_source(self):
+        with self.assertRaises(RuntimeError):
+            load_runtime_settings({"PHASE9_CUTOVER_READ_SOURCE": "mysql"})
+
     def test_create_job_repository_builds_in_memory_backend(self):
         repo = create_job_repository({})
         self.assertIsInstance(repo, InMemoryJobRepository)
@@ -137,6 +197,16 @@ class Phase0ConfigValidationTests(unittest.TestCase):
                 }
             )
             self.assertIsInstance(repo, SQLiteJobRepository)
+
+    def test_create_vector_repository_builds_sqlite_backend(self):
+        with TemporaryDirectory() as temp_root:
+            repo = create_vector_repository(
+                {
+                    "VECTOR_REPOSITORY_BACKEND": "sqlite",
+                    "JOB_REPOSITORY_SQLITE_PATH": f"{temp_root}/vectors.db",
+                }
+            )
+            self.assertIsInstance(repo, SQLiteVectorRepository)
 
     def test_create_job_repository_builds_sqlalchemy_backend(self):
         repo = create_job_repository(

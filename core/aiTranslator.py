@@ -3,12 +3,16 @@ import re
 import os
 import sqlite3
 import traceback
+from pathlib import Path
 from openai import OpenAI
 import json
+from tenacity import retry, stop_after_attempt, wait_exponential
 from data.translatorVectorDatabase import TranslationVectorManager
 from core.aiReviewer import MusicReviewer
 # 导入你的日志类实例
 from utils.logger_manager import log_manager
+
+_PROMPT_TEMPLATE = (Path(__file__).parent.parent / "prompts" / "translation_v1.txt").read_text(encoding="utf-8")
 
 # 初始化专门针对翻译任务的 Logger
 logger = log_manager.get_task_logger("TRANSLATOR")
@@ -32,6 +36,20 @@ class Translator:
             logger.error(f"🚨 翻译模型初始化失败: {e}")
             logger.error(traceback.format_exc())
             raise
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    def _call_deepseek(self, prompt: str) -> str:
+        response = self.client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": "You are a lyric synchronization expert."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            stream=False,
+            timeout=30,
+        )
+        return response.choices[0].message.content
         # try:
         #     self.llm = Llama.from_pretrained(
         #         repo_id="Randyliu99/qwen2.5-7b-jcole-gguf",
@@ -149,47 +167,14 @@ class Translator:
             # estimated_tokens = len(lyrics_block.split()) * 1.5
             # if estimated_tokens > 1800:
             #     logger.warning(f"📏 歌词量较大 (约 {estimated_tokens:.0f} tokens)，可能接近 n_ctx 限制。")
-            prompt = f"""你是一个专业的 Hip-hop 中文翻译官，能够准确理解并翻译嘻哈、R&B音乐，准确且地道不突兀，十分吸引听众。请将以下歌词翻译成中文。
-            要求：
-            【硬性要求，必须遵守！！！】你必须严格遵守 1:1 映射。
-            【硬性要求，必须遵守！！！】输入是 <L52>...</L52>，输出就必须截止于 <R52>...</R52>。
-            【硬性要求，必须遵守！！！】严禁生成任何不在输入列表中的索引号。 > 每一行 <Rn> 必须是对 <Ln> 内容的完整且唯一的翻译。
-            - 逐行翻译下方 XML 标签内的内容。
-            - 必须以 <R{{i}}>中文翻译</R{{i}}> 的格式返回。
-            - 严禁合并行
-            - 保持行数和序号一一对应。
-            - 翻译要地道，保留歌词原本的俚语和韵味。
-            - 只返回翻译后的中文，不要包含任何解释。
-            - 语义通顺，能从全文的角度理解上下文含义。
-            - 根据歌词的内容设定语境。
-            - 不含脏话，敏感词汇会进行隐晦处理。
-
-            【参考示例】:
-            {dynamic_few_shot}
-
-            歌词列表：
-            {anchored_block}
-
-            直接返回结果，不要任何开场白。
-            """
+            prompt = _PROMPT_TEMPLATE.format(
+                dynamic_few_shot=dynamic_few_shot,
+                anchored_block=anchored_block,
+            )
 
             # --- 步骤 B: 调用本地模型翻译 ---
             logger.info("🧠 正在执行模型翻译...")
-            # response = self.llm.create_chat_completion(
-            #     messages=[{"role": "user", "content": prompt}],
-            #     max_tokens=2048, # 歌词长的话需要调大
-            #     temperature=0.7
-            # )
-            response = self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {"role": "system", "content": "You are a lyric synchronization expert."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3, # 降低随机性，增强对齐严谨度
-                stream=False
-            )
-            raw_content = response.choices[0].message.content
+            raw_content = self._call_deepseek(prompt)
             chinese_map = {}
             patterns = re.findall(r'<R(\d+)>(.*?)</R\1>', raw_content, re.DOTALL)
             for idx_str, text in patterns:

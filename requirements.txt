@@ -233,6 +233,7 @@ torchmetrics==1.8.2
 tornado==6.5.4
 tqdm==4.67.3
 traitlets==5.14.3
+sentence-transformers>=3.0.0
 transformers==4.57.6
 treetable==0.2.6
 typer==0.24.1
@@ -252,6 +253,6 @@ whisperx==3.8.1
 xxhash==3.6.0
 yarg==0.1.9
 yarl==1.23.0
-yt-dlp==2026.2.21
+yt-dlp==2026.3.17
 zipp==3.23.0
 zstandard==0.25.0

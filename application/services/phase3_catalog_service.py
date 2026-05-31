@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable
 
 from domain.entities import Artist, ArtistSyncRun, VideoCandidate
@@ -40,6 +40,10 @@ class CandidateListFilters:
     page: int = 1
     page_size: int = 20
     status: str = ""
+
+
+class StaleArtistSyncResult(RuntimeError):
+    pass
 
 
 class ArtistSyncService:
@@ -174,7 +178,7 @@ class VideoDiscoveryService:
                 title=item.title,
                 source_url=item.source_url,
                 source_kind=run.source_kind,
-                status=CandidateStatus.PENDING_REVIEW,
+                status=CandidateStatus.DISCOVERED,
                 ingestion_status=SyncStatus.COMPLETED,
                 published_at=item.published_at,
                 first_seen_at=now,
@@ -193,11 +197,13 @@ class CandidateCatalogService:
         artist_sync_run_repository: ArtistSyncRunRepository,
         candidate_repository: CandidateRepository,
         providers: Phase3Providers,
+        artist_sync_stale_after_seconds: int = 1800,
     ) -> None:
         self.artist_repository = artist_repository
         self.artist_sync_run_repository = artist_sync_run_repository
         self.candidate_repository = candidate_repository
         self.providers = providers
+        self.artist_sync_stale_after_seconds = artist_sync_stale_after_seconds
         self.artist_sync_service = ArtistSyncService(artist_repository, artist_sync_run_repository)
         self.channel_discovery_service = ChannelDiscoveryService(artist_repository)
         self.video_discovery_service = VideoDiscoveryService(candidate_repository)
@@ -223,7 +229,7 @@ class CandidateCatalogService:
             ]
 
         candidate_count_by_artist = {
-            artist.spotify_id: len(self.candidate_repository.list_for_artist(artist.spotify_id))
+            artist.spotify_id: len(self._available_candidates_for_artist(artist.spotify_id))
             for artist in artists
         }
 
@@ -298,19 +304,13 @@ class CandidateCatalogService:
             raise KeyError(artist_id)
 
         overall_started_at = utc_now()
-        in_progress_artist = Artist(
-            spotify_id=artist.spotify_id,
-            name=artist.name,
-            yt_channel_id=artist.yt_channel_id,
-            status=artist.status,
-            sync_status=SyncStatus.PROCESSING,
-            last_sync_started_at=overall_started_at,
-            last_sync_completed_at=artist.last_sync_completed_at,
-            last_sync_error=None,
-            last_channel_resolved_at=artist.last_channel_resolved_at,
-            last_discovery_at=artist.last_discovery_at,
+        in_progress_artist = self.artist_repository.try_begin_sync(
+            artist.spotify_id,
+            started_at=overall_started_at,
+            stale_before=overall_started_at - timedelta(seconds=self.artist_sync_stale_after_seconds),
         )
-        self.artist_repository.upsert(in_progress_artist)
+        if in_progress_artist is None:
+            raise RuntimeError("Artist sync already in progress")
 
         try:
             resolved_artist, channel_run = self._resolve_channel(
@@ -338,7 +338,13 @@ class CandidateCatalogService:
                 last_channel_resolved_at=resolved_artist.last_channel_resolved_at,
                 last_discovery_at=completed_at,
             )
-            self.artist_repository.upsert(updated_artist)
+            finished = self.artist_repository.try_finish_sync(
+                updated_artist.spotify_id,
+                started_at=overall_started_at,
+                finished_artist=updated_artist,
+            )
+            if not finished:
+                raise StaleArtistSyncResult("Artist sync result is stale")
             return {
                 "run_id": rss_run.run_id,
                 "artist_id": updated_artist.spotify_id,
@@ -349,6 +355,8 @@ class CandidateCatalogService:
                 "channel_run_id": channel_run.run_id,
                 "discovery_run_id": rss_run.run_id,
             }
+        except StaleArtistSyncResult:
+            raise
         except Exception as exc:
             completed_at = utc_now()
             failed_artist = Artist(
@@ -363,7 +371,11 @@ class CandidateCatalogService:
                 last_channel_resolved_at=in_progress_artist.last_channel_resolved_at,
                 last_discovery_at=in_progress_artist.last_discovery_at,
             )
-            self.artist_repository.upsert(failed_artist)
+            self.artist_repository.try_finish_sync(
+                failed_artist.spotify_id,
+                started_at=overall_started_at,
+                finished_artist=failed_artist,
+            )
             raise
 
     def refresh_active_artists(
@@ -493,9 +505,10 @@ class CandidateCatalogService:
 
     def _artist_to_dto(self, artist: Artist) -> dict:
         candidates = self.candidate_repository.list_for_artist(artist.spotify_id)
+        available_candidates = self._available_candidates(candidates)
         runs = self.artist_sync_run_repository.list_for_artist(artist.spotify_id)
         latest_run = next(iter(runs), None)
-        latest_candidate = candidates[0] if candidates else None
+        latest_candidate = available_candidates[0] if available_candidates else None
         source_health = self._build_source_health(runs)
         partial_failure = any(
             source_state["status"] == SyncStatus.FAILED.value for source_state in source_health.values()
@@ -509,9 +522,9 @@ class CandidateCatalogService:
             "last_sync_started_at": self._iso(artist.last_sync_started_at),
             "last_sync_completed_at": self._iso(artist.last_sync_completed_at),
             "last_sync_error": artist.last_sync_error,
-            "candidate_count": len(candidates),
+            "candidate_count": len(available_candidates),
             "partial_failure": partial_failure,
-            "empty_state": len(candidates) == 0,
+            "empty_state": len(available_candidates) == 0,
             "retry_metadata": {
                 "can_resync": True,
                 "latest_retry_count": latest_run.retry_count if latest_run else 0,
@@ -531,6 +544,17 @@ class CandidateCatalogService:
             if latest_run
             else None,
         }
+
+    def _available_candidates_for_artist(self, artist_id: str) -> list[VideoCandidate]:
+        return self._available_candidates(self.candidate_repository.list_for_artist(artist_id))
+
+    @staticmethod
+    def _available_candidates(candidates: list[VideoCandidate]) -> list[VideoCandidate]:
+        return [
+            candidate
+            for candidate in candidates
+            if candidate.status == CandidateStatus.DISCOVERED
+        ]
 
     @staticmethod
     def _candidate_to_dto(candidate: VideoCandidate | None) -> dict | None:

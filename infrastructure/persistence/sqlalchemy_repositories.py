@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from sqlalchemy import create_engine, select
+from datetime import datetime
+from sqlalchemy import create_engine, or_, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -21,6 +22,7 @@ from domain.entities import (
     VideoCandidate,
 )
 from domain.job_lifecycle import validate_job_transition
+from domain.enums import StageStatus, SyncStatus
 from domain.time_utils import utc_now
 from domain.repositories import (
     ArtifactRepository,
@@ -57,7 +59,8 @@ class SQLAlchemySessionFactory:
     """Small session wrapper so repositories share one engine/config entry point."""
 
     def __init__(self, database_url: str) -> None:
-        self.engine: Engine = create_engine(database_url, future=True)
+        connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+        self.engine: Engine = create_engine(database_url, future=True, connect_args=connect_args)
         self._sessionmaker = sessionmaker(bind=self.engine, expire_on_commit=False, future=True)
 
     def create_schema(self) -> None:
@@ -65,6 +68,19 @@ class SQLAlchemySessionFactory:
 
     @contextmanager
     def session_scope(self):
+        session: Session = self._sessionmaker()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    @contextmanager
+    def transactional(self):
+        """Yield a session for use across multiple repository calls in one transaction."""
         session: Session = self._sessionmaker()
         try:
             yield session
@@ -108,6 +124,52 @@ class SQLAlchemyArtistRepository(ArtistRepository):
             existing.last_sync_error = artist.last_sync_error
             existing.last_channel_resolved_at = artist.last_channel_resolved_at
             existing.last_discovery_at = artist.last_discovery_at
+
+    def try_begin_sync(self, spotify_id: str, started_at: datetime, stale_before: datetime) -> Artist | None:
+        with self.session_factory.session_scope() as session:
+            result = session.execute(
+                update(ArtistModel)
+                .where(
+                    ArtistModel.spotify_id == spotify_id,
+                    or_(
+                        ArtistModel.sync_status != SyncStatus.PROCESSING,
+                        ArtistModel.last_sync_started_at.is_(None),
+                        ArtistModel.last_sync_started_at <= stale_before,
+                    ),
+                )
+                .values(
+                    sync_status=SyncStatus.PROCESSING,
+                    last_sync_started_at=started_at,
+                    last_sync_error=None,
+                )
+            )
+            if result.rowcount != 1:
+                return None
+            row = session.get(ArtistModel, spotify_id)
+            return self._to_entity(row) if row is not None else None
+
+    def try_finish_sync(self, spotify_id: str, started_at: datetime, finished_artist: Artist) -> bool:
+        with self.session_factory.session_scope() as session:
+            result = session.execute(
+                update(ArtistModel)
+                .where(
+                    ArtistModel.spotify_id == spotify_id,
+                    ArtistModel.sync_status == SyncStatus.PROCESSING,
+                    ArtistModel.last_sync_started_at == started_at,
+                )
+                .values(
+                    name=finished_artist.name,
+                    yt_channel_id=finished_artist.yt_channel_id,
+                    status=finished_artist.status,
+                    sync_status=finished_artist.sync_status,
+                    last_sync_started_at=finished_artist.last_sync_started_at,
+                    last_sync_completed_at=finished_artist.last_sync_completed_at,
+                    last_sync_error=finished_artist.last_sync_error,
+                    last_channel_resolved_at=finished_artist.last_channel_resolved_at,
+                    last_discovery_at=finished_artist.last_discovery_at,
+                )
+            )
+            return result.rowcount == 1
 
     def get(self, spotify_id: str) -> Artist | None:
         with self.session_factory.session_scope() as session:
@@ -346,54 +408,61 @@ class SQLAlchemyPipelineStageExecutionRepository(PipelineStageExecutionRepositor
 
     def upsert(self, execution: PipelineStageExecution) -> None:
         with self.session_factory.session_scope() as session:
-            row = session.get(PipelineStageExecutionModel, execution.execution_id)
-            if row is None:
-                row = (
-                    session.execute(
-                        select(PipelineStageExecutionModel).where(
-                            PipelineStageExecutionModel.dedupe_key == execution.dedupe_key
-                        )
-                    )
-                    .scalars()
-                    .first()
-                )
+            self._upsert_with_session(session, execution)
 
-            if row is None:
-                session.add(
-                    PipelineStageExecutionModel(
-                        execution_id=execution.execution_id,
-                        dedupe_key=execution.dedupe_key,
-                        job_id=execution.job_id,
-                        stage=execution.stage,
-                        candidate_id=execution.candidate_id,
-                        status=execution.status,
-                        attempt=execution.attempt,
-                        max_attempts=execution.max_attempts,
-                        next_retry_at=execution.next_retry_at,
-                        locked_at=execution.locked_at,
-                        completed_at=execution.completed_at,
-                        error_message=execution.error_message,
-                        result_payload=execution.result_payload,
-                        trace_id=execution.trace_id,
-                        created_at=execution.created_at,
-                        updated_at=execution.updated_at,
+    def upsert_with_session(self, session, execution: PipelineStageExecution) -> None:
+        """Upsert using a caller-supplied session (for shared transactions)."""
+        self._upsert_with_session(session, execution)
+
+    def _upsert_with_session(self, session, execution: PipelineStageExecution) -> None:
+        row = session.get(PipelineStageExecutionModel, execution.execution_id)
+        if row is None:
+            row = (
+                session.execute(
+                    select(PipelineStageExecutionModel).where(
+                        PipelineStageExecutionModel.dedupe_key == execution.dedupe_key
                     )
                 )
-                return
+                .scalars()
+                .first()
+            )
 
-            row.job_id = execution.job_id
-            row.stage = execution.stage
-            row.candidate_id = execution.candidate_id
-            row.status = execution.status
-            row.attempt = execution.attempt
-            row.max_attempts = execution.max_attempts
-            row.next_retry_at = execution.next_retry_at
-            row.locked_at = execution.locked_at
-            row.completed_at = execution.completed_at
-            row.error_message = execution.error_message
-            row.result_payload = execution.result_payload
-            row.trace_id = execution.trace_id
-            row.updated_at = execution.updated_at
+        if row is None:
+            session.add(
+                PipelineStageExecutionModel(
+                    execution_id=execution.execution_id,
+                    dedupe_key=execution.dedupe_key,
+                    job_id=execution.job_id,
+                    stage=execution.stage,
+                    candidate_id=execution.candidate_id,
+                    status=execution.status,
+                    attempt=execution.attempt,
+                    max_attempts=execution.max_attempts,
+                    next_retry_at=execution.next_retry_at,
+                    locked_at=execution.locked_at,
+                    completed_at=execution.completed_at,
+                    error_message=execution.error_message,
+                    result_payload=execution.result_payload,
+                    trace_id=execution.trace_id,
+                    created_at=execution.created_at,
+                    updated_at=execution.updated_at,
+                )
+            )
+            return
+
+        row.job_id = execution.job_id
+        row.stage = execution.stage
+        row.candidate_id = execution.candidate_id
+        row.status = execution.status
+        row.attempt = execution.attempt
+        row.max_attempts = execution.max_attempts
+        row.next_retry_at = execution.next_retry_at
+        row.locked_at = execution.locked_at
+        row.completed_at = execution.completed_at
+        row.error_message = execution.error_message
+        row.result_payload = execution.result_payload
+        row.trace_id = execution.trace_id
+        row.updated_at = execution.updated_at
 
     def get_by_dedupe_key(self, dedupe_key: str) -> PipelineStageExecution | None:
         with self.session_factory.session_scope() as session:
@@ -428,6 +497,22 @@ class SQLAlchemyPipelineStageExecutionRepository(PipelineStageExecutionRepositor
                     select(PipelineStageExecutionModel)
                     .where(PipelineStageExecutionModel.candidate_id == candidate_id)
                     .order_by(PipelineStageExecutionModel.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [self._to_entity(row) for row in rows]
+
+    def list_due_retries(self, now: datetime, limit: int = 100) -> list[PipelineStageExecution]:
+        with self.session_factory.session_scope() as session:
+            rows = (
+                session.execute(
+                    select(PipelineStageExecutionModel)
+                    .where(PipelineStageExecutionModel.status == StageStatus.RETRY_SCHEDULED)
+                    .where(PipelineStageExecutionModel.next_retry_at.is_not(None))
+                    .where(PipelineStageExecutionModel.next_retry_at <= now)
+                    .order_by(PipelineStageExecutionModel.next_retry_at.asc())
+                    .limit(limit)
                 )
                 .scalars()
                 .all()
@@ -889,28 +974,40 @@ class SQLAlchemyArtifactRepository(ArtifactRepository):
 class SQLAlchemyOutboxRepository(OutboxRepository):
     def __init__(self, session_factory: SQLAlchemySessionFactory) -> None:
         self.session_factory = session_factory
+        self._is_postgres = session_factory.engine.dialect.name == "postgresql"
 
     def add(self, event: OutboxEvent) -> None:
         with self.session_factory.session_scope() as session:
-            session.add(
-                OutboxModel(
-                    event_id=event.event_id,
-                    topic=event.topic,
-                    payload=event.payload,
-                    status=event.status,
-                    aggregate_id=event.aggregate_id,
-                    dedupe_key=event.dedupe_key,
-                    correlation_id=event.correlation_id,
-                )
+            self._add_with_session(session, event)
+
+    def add_with_session(self, session, event: OutboxEvent) -> None:
+        """Add using a caller-supplied session (for shared transactions)."""
+        self._add_with_session(session, event)
+
+    def _add_with_session(self, session, event: OutboxEvent) -> None:
+        session.add(
+            OutboxModel(
+                event_id=event.event_id,
+                topic=event.topic,
+                payload=event.payload,
+                status=event.status,
+                aggregate_id=event.aggregate_id,
+                dedupe_key=event.dedupe_key,
+                correlation_id=event.correlation_id,
             )
+        )
 
     def list_pending(self) -> list[OutboxEvent]:
         with self.session_factory.session_scope() as session:
-            rows = (
-                session.execute(select(OutboxModel).where(OutboxModel.status == "pending"))
-                .scalars()
-                .all()
+            stmt = (
+                select(OutboxModel)
+                .where(OutboxModel.status == "pending")
+                .order_by(OutboxModel.event_id.asc())
+                .limit(50)
             )
+            if self._is_postgres:
+                stmt = stmt.with_for_update(skip_locked=True)
+            rows = session.execute(stmt).scalars().all()
             return [self._to_entity(row) for row in rows]
 
     def get(self, event_id: str) -> OutboxEvent | None:

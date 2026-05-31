@@ -185,6 +185,8 @@ class VectorRecord:
     namespace: str
     text: str
     metadata: dict = field(default_factory=dict)
+    embedding: Optional[list[float]] = None
+    score: Optional[float] = None
 
 
 @dataclass
