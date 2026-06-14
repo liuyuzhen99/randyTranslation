@@ -11,10 +11,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect
 
 import api.service as api_service
-from application.services.phase3_catalog_service import (
+from application.services.artist_catalog_service import (
     ArtistListFilters,
     CandidateDiscoveryPayload,
-    Phase3Providers,
+    ArtistCatalogProviders,
 )
 from domain.entities import Artist
 from domain.enums import CandidateStatus, SyncStatus
@@ -26,18 +26,18 @@ from infrastructure.persistence.sqlalchemy_repositories import (
 )
 
 
-class Phase3CatalogTests(unittest.TestCase):
+class ArtistCatalogTests(unittest.TestCase):
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
     def test_catalog_resync_persists_run_and_candidates(self):
         with TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase3.db')}")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'artist-catalog.db')}")
             session_factory.create_schema()
             artist_repository = SQLAlchemyArtistRepository(session_factory)
             artist_repository.upsert(Artist(spotify_id="artist-1", name="Kendrick Lamar"))
 
-            service = api_service.create_phase3_catalog_service(
-                providers=Phase3Providers(
+            service = api_service.create_artist_catalog_service(
+                providers=ArtistCatalogProviders(
                     followed_artists_lookup=lambda: [],
                     channel_lookup=lambda artist: "UC_TEST_CHANNEL",
                     candidate_lookup=lambda artist, days: [
@@ -58,8 +58,9 @@ class Phase3CatalogTests(unittest.TestCase):
                 runtime_settings=api_service.load_runtime_settings(
                     {
                         "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3.db')}",
-                        "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'artist-catalog.db')}",
+                        "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
                     }
                 ),
                 session_factory=session_factory,
@@ -83,13 +84,13 @@ class Phase3CatalogTests(unittest.TestCase):
 
     def test_catalog_resync_marks_artist_failed_when_provider_fails(self):
         with TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase3-failed.db')}")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'artist-catalog-failed.db')}")
             session_factory.create_schema()
             artist_repository = SQLAlchemyArtistRepository(session_factory)
             artist_repository.upsert(Artist(spotify_id="artist-fail", name="Failing Artist"))
 
-            service = api_service.create_phase3_catalog_service(
-                providers=Phase3Providers(
+            service = api_service.create_artist_catalog_service(
+                providers=ArtistCatalogProviders(
                     followed_artists_lookup=lambda: [],
                     channel_lookup=lambda artist: "UC_FAILING",
                     candidate_lookup=lambda artist, days: (_ for _ in ()).throw(RuntimeError("rss unavailable")),
@@ -97,8 +98,9 @@ class Phase3CatalogTests(unittest.TestCase):
                 runtime_settings=api_service.load_runtime_settings(
                     {
                         "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3-failed.db')}",
-                        "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'artist-catalog-failed.db')}",
+                        "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
                     }
                 ),
                 session_factory=session_factory,
@@ -114,7 +116,7 @@ class Phase3CatalogTests(unittest.TestCase):
 
     def test_catalog_resync_rejects_active_processing_artist(self):
         with TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase3-lock.db')}")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'artist-catalog-lock.db')}")
             session_factory.create_schema()
             artist_repository = SQLAlchemyArtistRepository(session_factory)
             artist_repository.upsert(
@@ -126,8 +128,8 @@ class Phase3CatalogTests(unittest.TestCase):
                 )
             )
 
-            service = api_service.create_phase3_catalog_service(
-                providers=Phase3Providers(
+            service = api_service.create_artist_catalog_service(
+                providers=ArtistCatalogProviders(
                     followed_artists_lookup=lambda: [],
                     channel_lookup=lambda artist: "UC_LOCKED",
                     candidate_lookup=lambda artist, days: [],
@@ -135,8 +137,9 @@ class Phase3CatalogTests(unittest.TestCase):
                 runtime_settings=api_service.load_runtime_settings(
                     {
                         "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3-lock.db')}",
-                        "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'artist-catalog-lock.db')}",
+                        "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
                         "ARTIST_SYNC_STALE_AFTER_SECONDS": "999999999",
                     }
                 ),
@@ -156,7 +159,7 @@ class Phase3CatalogTests(unittest.TestCase):
 
     def test_catalog_resync_can_take_over_stale_processing_artist(self):
         with TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase3-stale.db')}")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'artist-catalog-stale.db')}")
             session_factory.create_schema()
             artist_repository = SQLAlchemyArtistRepository(session_factory)
             artist_repository.upsert(
@@ -168,8 +171,8 @@ class Phase3CatalogTests(unittest.TestCase):
                 )
             )
 
-            service = api_service.create_phase3_catalog_service(
-                providers=Phase3Providers(
+            service = api_service.create_artist_catalog_service(
+                providers=ArtistCatalogProviders(
                     followed_artists_lookup=lambda: [],
                     channel_lookup=lambda artist: "UC_STALE",
                     candidate_lookup=lambda artist, days: [],
@@ -177,8 +180,9 @@ class Phase3CatalogTests(unittest.TestCase):
                 runtime_settings=api_service.load_runtime_settings(
                     {
                         "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3-stale.db')}",
-                        "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'artist-catalog-stale.db')}",
+                        "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
                         "ARTIST_SYNC_STALE_AFTER_SECONDS": "1",
                     }
                 ),
@@ -195,7 +199,7 @@ class Phase3CatalogTests(unittest.TestCase):
 
     def test_artist_finish_sync_does_not_overwrite_newer_processing_run(self):
         with TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase3-token.db')}")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'artist-catalog-token.db')}")
             session_factory.create_schema()
             artist_repository = SQLAlchemyArtistRepository(session_factory)
             old_started_at = datetime(2026, 5, 20, 10, 0, 0)
@@ -226,7 +230,7 @@ class Phase3CatalogTests(unittest.TestCase):
 
     def test_catalog_resync_raises_when_successful_result_loses_finish_token(self):
         with TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase3-stale-result.db')}")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'artist-catalog-stale-result.db')}")
             session_factory.create_schema()
             artist_repository = SQLAlchemyArtistRepository(session_factory)
             artist_repository.upsert(Artist(spotify_id="artist-stale-result", name="Stale Result Artist"))
@@ -252,8 +256,8 @@ class Phase3CatalogTests(unittest.TestCase):
                     )
                 ]
 
-            service = api_service.create_phase3_catalog_service(
-                providers=Phase3Providers(
+            service = api_service.create_artist_catalog_service(
+                providers=ArtistCatalogProviders(
                     followed_artists_lookup=lambda: [],
                     channel_lookup=lambda artist: "UC_STALE_RESULT",
                     candidate_lookup=candidate_lookup,
@@ -261,8 +265,9 @@ class Phase3CatalogTests(unittest.TestCase):
                 runtime_settings=api_service.load_runtime_settings(
                     {
                         "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3-stale-result.db')}",
-                        "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'artist-catalog-stale-result.db')}",
+                        "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
                     }
                 ),
                 session_factory=session_factory,
@@ -279,7 +284,7 @@ class Phase3CatalogTests(unittest.TestCase):
 
     def test_list_artists_supports_candidate_and_sync_sorting(self):
         with TemporaryDirectory() as temp_root:
-            db_path = os.path.join(temp_root, "phase3-sort.db")
+            db_path = os.path.join(temp_root, "artist-catalog-sort.db")
             session_factory = SQLAlchemySessionFactory(f"sqlite:///{db_path}")
             session_factory.create_schema()
             artist_repository = SQLAlchemyArtistRepository(session_factory)
@@ -300,8 +305,8 @@ class Phase3CatalogTests(unittest.TestCase):
                 )
             )
 
-            service = api_service.create_phase3_catalog_service(
-                providers=Phase3Providers(
+            service = api_service.create_artist_catalog_service(
+                providers=ArtistCatalogProviders(
                     followed_artists_lookup=lambda: [],
                     channel_lookup=lambda artist: artist.yt_channel_id or f"UC_{artist.spotify_id.upper()}",
                     candidate_lookup=lambda artist, days: [
@@ -318,7 +323,8 @@ class Phase3CatalogTests(unittest.TestCase):
                     {
                         "JOB_REPOSITORY_BACKEND": "sqlalchemy",
                         "DATABASE_URL": f"sqlite:///{db_path}",
-                        "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                        "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
                     }
                 ),
                 session_factory=session_factory,
@@ -365,10 +371,11 @@ class Phase3CatalogTests(unittest.TestCase):
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_BASE_URL": "https://example.local",
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'artist-catalog.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
             }
-            providers = Phase3Providers(
+            providers = ArtistCatalogProviders(
                 followed_artists_lookup=lambda: [],
                 channel_lookup=lambda artist: artist.yt_channel_id or "UC_ARTIST_ONE",
                 candidate_lookup=lambda artist, days: [
@@ -383,12 +390,12 @@ class Phase3CatalogTests(unittest.TestCase):
             )
 
             with patch.dict(os.environ, env, clear=False):
-                app = api_service.create_app(phase3_providers=providers)
+                app = api_service.create_app(artist_catalog_providers=providers)
                 artist_repository = SQLAlchemyArtistRepository(app.state.session_factory)
                 artist_repository.upsert(Artist(spotify_id="artist-1", name="Doechii"))
                 artist_repository.upsert(Artist(spotify_id="artist-2", name="Little Simz"))
-                app.state.phase3_catalog_service.resync_artist("artist-1", trigger="manual")
-                app.state.phase3_catalog_service.resync_artist("artist-2", trigger="manual")
+                app.state.artist_catalog_service.resync_artist("artist-1", trigger="manual")
+                app.state.artist_catalog_service.resync_artist("artist-2", trigger="manual")
 
                 with TestClient(app) as client:
                     artists_response = client.get("/v1/artists", params={"page": 1, "page_size": 1})
@@ -427,13 +434,14 @@ class Phase3CatalogTests(unittest.TestCase):
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_BASE_URL": "https://example.local",
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'artist-catalog.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
             }
 
             with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app(
-                    phase3_providers=Phase3Providers(
+                    artist_catalog_providers=ArtistCatalogProviders(
                         followed_artists_lookup=lambda: [],
                         channel_lookup=lambda artist: "UC_NONE",
                         candidate_lookup=lambda artist, days: [],
@@ -452,14 +460,15 @@ class Phase3CatalogTests(unittest.TestCase):
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_BASE_URL": "https://example.local",
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'artist-catalog.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
                 "ARTIST_SYNC_STALE_AFTER_SECONDS": "999999999",
             }
 
             with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app(
-                    phase3_providers=Phase3Providers(
+                    artist_catalog_providers=ArtistCatalogProviders(
                         followed_artists_lookup=lambda: [],
                         channel_lookup=lambda artist: "UC_BUSY",
                         candidate_lookup=lambda artist, days: [],
@@ -482,9 +491,9 @@ class Phase3CatalogTests(unittest.TestCase):
             self.assertEqual(payload["error"]["code"], "artist_sync_already_in_progress")
             self.assertEqual(payload["error"]["message"], "Artist sync already in progress")
 
-    def test_alembic_head_creates_phase3_catalog_tables(self):
+    def test_alembic_head_creates_artist_catalog_tables(self):
         with TemporaryDirectory() as temp_root:
-            db_path = os.path.join(temp_root, "phase3-migration.db")
+            db_path = os.path.join(temp_root, "artist-catalog-migration.db")
             alembic_cfg = Config(str(self.PROJECT_ROOT / "alembic.ini"))
             alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
             alembic_cfg.set_main_option(
@@ -502,16 +511,17 @@ class Phase3CatalogTests(unittest.TestCase):
             self.assertIn("sync_status", artist_columns)
             self.assertIn("last_sync_completed_at", artist_columns)
 
-    def test_internal_phase3_sync_and_batch_refresh_endpoints(self):
+    def test_internal_artist_catalog_sync_and_batch_refresh_endpoints(self):
         with TemporaryDirectory() as temp_root:
             env = {
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_BASE_URL": "https://example.local",
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'artist-catalog.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
             }
-            providers = Phase3Providers(
+            providers = ArtistCatalogProviders(
                 followed_artists_lookup=lambda: [
                     Artist(spotify_id="artist-1", name="Doechii"),
                     Artist(spotify_id="artist-2", name="Little Simz"),
@@ -528,11 +538,11 @@ class Phase3CatalogTests(unittest.TestCase):
             )
 
             with patch.dict(os.environ, env, clear=False):
-                app = api_service.create_app(phase3_providers=providers)
+                app = api_service.create_app(artist_catalog_providers=providers)
                 with TestClient(app) as client:
-                    sync_response = client.post("/internal/phase3/spotify/sync-followed-artists")
+                    sync_response = client.post("/internal/artist-catalog/spotify/sync-followed-artists")
                     refresh_response = client.post(
-                        "/internal/phase3/catalog/resync-active-artists",
+                        "/internal/artist-catalog/resync-active-artists",
                         params={"days": 14, "limit": 2},
                     )
                     artists_response = client.get("/v1/artists", params={"sort": "last_synced_desc"})
@@ -554,7 +564,7 @@ class Phase3CatalogTests(unittest.TestCase):
 
     def test_sync_followed_artists_marks_unfollowed_artists_inactive(self):
         with TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase3.db')}")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'artist-catalog.db')}")
             session_factory.create_schema()
             artist_repository = SQLAlchemyArtistRepository(session_factory)
             artist_repository.upsert(
@@ -574,8 +584,8 @@ class Phase3CatalogTests(unittest.TestCase):
                 )
             )
 
-            service = api_service.create_phase3_catalog_service(
-                providers=Phase3Providers(
+            service = api_service.create_artist_catalog_service(
+                providers=ArtistCatalogProviders(
                     followed_artists_lookup=lambda: [Artist(spotify_id="artist-keep", name="Doechii")],
                     channel_lookup=lambda artist: artist.yt_channel_id,
                     candidate_lookup=lambda artist, days: [],
@@ -583,8 +593,9 @@ class Phase3CatalogTests(unittest.TestCase):
                 runtime_settings=api_service.load_runtime_settings(
                     {
                         "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase3.db')}",
-                        "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                        "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'artist-catalog.db')}",
+                        "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
                     }
                 ),
                 session_factory=session_factory,

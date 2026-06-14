@@ -3,13 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 
-def phase7_span(name: str, attributes: dict[str, Any] | None = None):
+def request_span(name: str, attributes: dict[str, Any] | None = None):
     try:
         from opentelemetry import trace
     except ImportError:
         return _NoopSpanContext()
 
-    tracer = trace.get_tracer("randyTranslation.phase7")
+    tracer = trace.get_tracer("randyTranslation.request_tracing")
     span = tracer.start_as_current_span(name)
     return _SpanContext(span, attributes or {})
 

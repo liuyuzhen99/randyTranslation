@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from api.dependencies import (
     get_artifact_lifecycle_service,
+    get_artist_catalog_service,
+    get_async_pipeline_services,
     get_outbox_dispatcher,
-    get_phase3_catalog_service,
-    get_phase6_async_pipeline_services,
     get_reconcile_service,
     get_runtime_settings,
     get_session_factory,
@@ -19,9 +19,9 @@ router = APIRouter(tags=["internal"])
 
 @router.get("/healthz")
 async def healthz(request: Request):
-    from application.services.phase7_health import Phase7HealthService
+    from application.services.operational_health import OperationalHealthService
 
-    result = Phase7HealthService(
+    result = OperationalHealthService(
         session_factory=request.app.state.session_factory,
         media_storage=request.app.state.media_storage,
     ).liveness()
@@ -30,7 +30,7 @@ async def healthz(request: Request):
 
 @router.get("/readyz")
 async def readyz(request: Request):
-    from application.services.phase7_health import Phase7HealthService
+    from application.services.operational_health import OperationalHealthService
     from domain.queue_topology import PipelineQueueTopology
     from infrastructure.messaging.rabbitmq_observability import (
         RabbitMQQueueMetricsCollector,
@@ -44,7 +44,7 @@ async def readyz(request: Request):
         if rabbitmq_url
         else None
     )
-    result = Phase7HealthService(
+    result = OperationalHealthService(
         session_factory=request.app.state.session_factory,
         media_storage=request.app.state.media_storage,
         queue_probe=queue_probe,
@@ -58,14 +58,15 @@ async def readyz(request: Request):
     )
 
 
+@router.get("/internal/dual-write/reconcile")
 @router.get("/internal/phase2/reconcile")
-async def phase2_reconcile(
+async def dual_write_reconcile(
     reconcile_service=Depends(get_reconcile_service),
     runtime_settings=Depends(get_runtime_settings),
 ):
     if reconcile_service is None:
-        raise HTTPException(status_code=503, detail="Phase 2 reconcile service is not enabled")
-    report_path = runtime_settings.phase2_reconcile_report_path
+        raise HTTPException(status_code=503, detail="Dual-write reconcile service is not enabled")
+    report_path = runtime_settings.dual_write_reconcile_report_path
     if report_path:
         report = reconcile_service.write_report(report_path)
     else:
@@ -73,12 +74,13 @@ async def phase2_reconcile(
     return {"report": report.to_dict(), "report_path": report_path}
 
 
+@router.get("/internal/cutover/readiness")
 @router.get("/internal/phase9/cutover-readiness")
-async def phase9_cutover_readiness(
+async def cutover_readiness(
     reconcile_service=Depends(get_reconcile_service),
     runtime_settings=Depends(get_runtime_settings),
 ):
-    from application.services.phase9_cutover import Phase9CutoverReadinessService
+    from application.services.cutover_readiness import CutoverReadinessService
 
     dual_write_report = None
     if reconcile_service is not None:
@@ -91,24 +93,26 @@ async def phase9_cutover_readiness(
                 "error": str(exc),
             }
 
-    report = Phase9CutoverReadinessService(
-        read_source=runtime_settings.phase9_cutover_read_source,
-        schema_freeze_enabled=runtime_settings.phase9_schema_freeze_enabled,
-        rollback_enabled=runtime_settings.phase9_rollback_enabled,
-        stability_window_days=runtime_settings.phase9_stability_window_days,
+    report = CutoverReadinessService(
+        read_source=runtime_settings.cutover_read_source,
+        schema_freeze_enabled=runtime_settings.schema_freeze_enabled,
+        rollback_enabled=runtime_settings.rollback_enabled,
+        stability_window_days=runtime_settings.stability_window_days,
     ).evaluate(dual_write_report=dual_write_report)
     return {"report": report.to_dict()}
 
 
+@router.post("/internal/outbox/dispatch")
 @router.post("/internal/phase2/outbox/dispatch")
-async def phase2_outbox_dispatch(outbox_dispatcher=Depends(get_outbox_dispatcher)):
+async def outbox_dispatch(outbox_dispatcher=Depends(get_outbox_dispatcher)):
     if outbox_dispatcher is None:
-        raise HTTPException(status_code=503, detail="Phase 2 outbox dispatcher is not enabled")
+        raise HTTPException(status_code=503, detail="Outbox dispatcher is not enabled")
     return outbox_dispatcher.dispatch_pending()
 
 
+@router.get("/internal/pipeline/queue-topology")
 @router.get("/internal/phase6/queue-topology")
-async def phase6_queue_topology():
+async def pipeline_queue_topology():
     from domain.queue_topology import PipelineQueueTopology
 
     topology = PipelineQueueTopology()
@@ -125,13 +129,14 @@ async def phase6_queue_topology():
     }
 
 
+@router.post("/internal/pipeline/worker/handle")
 @router.post("/internal/phase6/worker/handle")
-async def phase6_worker_handle(
+async def pipeline_worker_handle(
     payload: dict,
-    services=Depends(get_phase6_async_pipeline_services),
+    services=Depends(get_async_pipeline_services),
 ):
     if services is None:
-        raise HTTPException(status_code=503, detail="Phase 6 async pipeline is not enabled")
+        raise HTTPException(status_code=503, detail="Async pipeline is not enabled")
     _command_service, worker = services
     raw_payload = payload.get("payload")
     if not isinstance(raw_payload, str):
@@ -148,28 +153,30 @@ async def phase6_worker_handle(
     }
 
 
+@router.post("/internal/pipeline/retry-scheduler/run")
 @router.post("/internal/phase6/retry-scheduler/run")
-async def phase6_retry_scheduler_run(
+async def pipeline_retry_scheduler_run(
     limit: int = 100,
-    services=Depends(get_phase6_async_pipeline_services),
+    services=Depends(get_async_pipeline_services),
     session_factory=Depends(get_session_factory),
 ):
-    from application.services.retry_scheduler import Phase6RetryScheduler
+    from application.services.retry_scheduler import PipelineRetryScheduler
     from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyPipelineStageExecutionRepository
 
     if services is None or session_factory is None:
-        raise HTTPException(status_code=503, detail="Phase 6 async pipeline is not enabled")
+        raise HTTPException(status_code=503, detail="Async pipeline is not enabled")
     command_service, _worker = services
-    scheduler = Phase6RetryScheduler(
+    scheduler = PipelineRetryScheduler(
         execution_repository=SQLAlchemyPipelineStageExecutionRepository(session_factory),
         command_service=command_service,
     )
     return scheduler.schedule_due(limit=limit)
 
 
+@router.get("/internal/observability/snapshot")
 @router.get("/internal/phase7/observability")
-async def phase7_observability(session_factory=Depends(get_session_factory)):
-    from application.services.phase7_observability import Phase7ObservabilityService
+async def observability_snapshot(session_factory=Depends(get_session_factory)):
+    from application.services.operational_observability import OperationalObservabilityService
     from domain.queue_topology import PipelineQueueTopology
     from infrastructure.messaging.rabbitmq_observability import (
         RabbitMQQueueMetricsCollector,
@@ -185,17 +192,18 @@ async def phase7_observability(session_factory=Depends(get_session_factory)):
         if rabbitmq_url
         else None
     )
-    return Phase7ObservabilityService(
+    return OperationalObservabilityService(
         session_factory=session_factory,
         queue_depth_collector=collector,
         topology=topology,
     ).snapshot()
 
 
+@router.get("/internal/observability/metrics")
 @router.get("/internal/phase7/metrics")
-async def phase7_metrics(session_factory=Depends(get_session_factory)):
-    from application.services.phase7_metrics import render_prometheus_metrics
-    from application.services.phase7_observability import Phase7ObservabilityService
+async def observability_metrics(session_factory=Depends(get_session_factory)):
+    from application.services.operational_metrics import render_prometheus_metrics
+    from application.services.operational_observability import OperationalObservabilityService
     from domain.queue_topology import PipelineQueueTopology
     from infrastructure.messaging.rabbitmq_observability import (
         RabbitMQQueueMetricsCollector,
@@ -211,7 +219,7 @@ async def phase7_metrics(session_factory=Depends(get_session_factory)):
         if rabbitmq_url
         else None
     )
-    snapshot = Phase7ObservabilityService(
+    snapshot = OperationalObservabilityService(
         session_factory=session_factory,
         queue_depth_collector=collector,
         topology=topology,
@@ -222,27 +230,30 @@ async def phase7_metrics(session_factory=Depends(get_session_factory)):
     )
 
 
+@router.post("/internal/artist-catalog/spotify/sync-followed-artists")
 @router.post("/internal/phase3/spotify/sync-followed-artists")
-async def phase3_sync_followed_artists(catalog_service=Depends(get_phase3_catalog_service)):
+async def sync_followed_artists(catalog_service=Depends(get_artist_catalog_service)):
     if catalog_service is None:
-        raise HTTPException(status_code=503, detail="Phase 3 catalog service is not enabled")
+        raise HTTPException(status_code=503, detail="Artist catalog service is not enabled")
     try:
         return catalog_service.sync_followed_artists(trigger="manual")
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
 
+@router.post("/internal/artist-catalog/resync-active-artists")
 @router.post("/internal/phase3/catalog/resync-active-artists")
-async def phase3_refresh_active_artists(
+async def refresh_active_artists(
     days: int = 14,
     limit: int | None = None,
-    catalog_service=Depends(get_phase3_catalog_service),
+    catalog_service=Depends(get_artist_catalog_service),
 ):
     if catalog_service is None:
-        raise HTTPException(status_code=503, detail="Phase 3 catalog service is not enabled")
+        raise HTTPException(status_code=503, detail="Artist catalog service is not enabled")
     return catalog_service.refresh_active_artists(days=days, limit=limit, trigger="system")
 
 
+@router.post("/internal/artifacts/lifecycle")
 @router.post("/internal/phase5/artifacts/lifecycle")
 async def run_artifact_lifecycle(
     artifact_lifecycle_service=Depends(get_artifact_lifecycle_service),

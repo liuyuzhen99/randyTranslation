@@ -5,7 +5,7 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from application.services.phase8_vectors import EmbeddingProvider
+from application.services.vector_migration import EmbeddingProvider
 from domain.entities import VectorRecord
 from domain.repositories import VectorRepository
 
@@ -110,7 +110,7 @@ class QdrantVectorRepository(VectorRepository):
                 raise RuntimeError(
                     f"Qdrant collection '{collection}' has vector dimension {vector_size}, "
                     f"but the configured embedding provider emits {expected_size}. "
-                    "Rebuild the collection and rerun scripts/phase8_qdrant_backfill.py before writing."
+                    "Rebuild the collection and rerun scripts/qdrant_vector_backfill.py before writing."
                 )
             return
         models = self._models()

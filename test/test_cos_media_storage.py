@@ -52,7 +52,7 @@ class FailingMultipartCOSClient(FakeCOSClient):
         self.fallback_upload = {"Bucket": Bucket, "Key": Key}
 
 
-class Phase5COSStorageTests(unittest.TestCase):
+class COSMediaStorageTests(unittest.TestCase):
     def test_tencent_cos_storage_lifecycle_with_injected_client(self):
         with tempfile.TemporaryDirectory() as temp_root:
             client = FakeCOSClient()
@@ -136,8 +136,8 @@ class Phase5COSStorageTests(unittest.TestCase):
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_BASE_URL": "https://example.local",
                 "JOB_REPOSITORY_BACKEND": "memory",
-                "PHASE2_SHADOW_WRITE_ENABLED": "false",
-                "PHASE2_RECONCILE_ENABLED": "false",
+                "SHADOW_WRITE_ENABLED": "false",
+                "DUAL_WRITE_RECONCILE_ENABLED": "false",
                 "MEDIA_STORAGE_BACKEND": "local",
                 "MEDIA_TEMP_ROOT": temp_root,
                 "MEDIA_OUTPUT_ROOT": output_root,
@@ -263,7 +263,7 @@ class Phase5COSStorageTests(unittest.TestCase):
                 app.state.artifact_lifecycle_service.media_storage = storage
 
                 with TestClient(app) as client:
-                    response = client.post("/internal/phase5/artifacts/lifecycle")
+                    response = client.post("/internal/artifacts/lifecycle")
 
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("stale01", response.json()["deleted_temp_workspaces"])

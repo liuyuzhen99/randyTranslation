@@ -58,7 +58,7 @@ class RabbitMQTopologyManager:
             import pika
         except ImportError as exc:
             raise RuntimeError(
-                "RabbitMQ topology setup requires pika. Install requirements before enabling Phase 6."
+                "RabbitMQ topology setup requires pika. Install requirements before enabling RabbitMQ pipeline."
             ) from exc
 
         return pika.BlockingConnection(pika.URLParameters(self.config.url))

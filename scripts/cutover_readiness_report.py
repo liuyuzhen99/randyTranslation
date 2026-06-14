@@ -4,17 +4,17 @@ import argparse
 import json
 from dataclasses import asdict
 
-from application.services.phase9_cutover import (
+from application.services.cutover_readiness import (
     EntitySnapshot,
-    Phase9CutoverReadinessService,
-    Phase9ReconciliationService,
-    Phase9ShadowTrafficReport,
+    CutoverReadinessService,
+    CutoverReconciliationService,
+    CutoverShadowTrafficReport,
     ShadowTrafficCaseResult,
 )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Phase 9 cutover readiness report.")
+    parser = argparse.ArgumentParser(description="cutover readiness report.")
     parser.add_argument("--legacy-snapshot", required=True)
     parser.add_argument("--target-snapshot", required=True)
     parser.add_argument("--dual-write-report")
@@ -25,13 +25,13 @@ def main() -> int:
     parser.add_argument("--stability-window-days", type=int, default=7)
     args = parser.parse_args()
 
-    parity_report = Phase9ReconciliationService().compare_snapshots(
+    parity_report = CutoverReconciliationService().compare_snapshots(
         legacy_snapshots=_load_snapshots(args.legacy_snapshot),
         target_snapshots=_load_snapshots(args.target_snapshot),
     )
     dual_write_report = _load_json(args.dual_write_report) if args.dual_write_report else None
     shadow_report = _load_shadow_report(args.shadow_report) if args.shadow_report else None
-    readiness = Phase9CutoverReadinessService(
+    readiness = CutoverReadinessService(
         read_source=args.read_source,
         schema_freeze_enabled=args.schema_freeze,
         rollback_enabled=args.rollback_enabled,
@@ -63,9 +63,9 @@ def _load_snapshots(path: str) -> dict[str, EntitySnapshot]:
     return result
 
 
-def _load_shadow_report(path: str) -> Phase9ShadowTrafficReport:
+def _load_shadow_report(path: str) -> CutoverShadowTrafficReport:
     payload = _load_json(path)
-    return Phase9ShadowTrafficReport(
+    return CutoverShadowTrafficReport(
         generated_at=payload["generated_at"],
         cases=[
             ShadowTrafficCaseResult(

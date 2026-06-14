@@ -13,8 +13,8 @@ from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemySession
 logger = logging.getLogger(__name__)
 
 
-class Phase2ShadowWriteService:
-    """Shadow-write selected job flow records into the Phase 2 SQLAlchemy schema."""
+class ShadowWriteService:
+    """Shadow-write selected job flow records into the SQLAlchemy schema."""
 
     def __init__(self, session_factory: SQLAlchemySessionFactory) -> None:
         self.session_factory = session_factory

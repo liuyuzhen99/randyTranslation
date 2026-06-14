@@ -911,7 +911,7 @@ class AutomationService:
         return response
 
 
-class Phase4WorkflowServices:
+class ReviewWorkflowServices:
     def __init__(
         self,
         artist_service: ArtistService,
@@ -929,7 +929,7 @@ class Phase4WorkflowServices:
         self.automation_service = automation_service
 
 
-def build_phase4_workflow_services(
+def build_review_workflow_services(
     artist_repository: ArtistRepository,
     candidate_repository: CandidateRepository,
     review_repository: ReviewRepository,
@@ -937,7 +937,7 @@ def build_phase4_workflow_services(
     subtitle_repository: SubtitleRepository | None = None,
     video_repository: VideoRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
-) -> Phase4WorkflowServices:
+) -> ReviewWorkflowServices:
     artist_service = ArtistService(artist_repository)
     translation_service = TranslationService()
     support = WorkflowSupport(
@@ -949,7 +949,7 @@ def build_phase4_workflow_services(
         video_repository=video_repository,
         artifact_repository=artifact_repository,
     )
-    return Phase4WorkflowServices(
+    return ReviewWorkflowServices(
         artist_service=artist_service,
         audit_service=AuditService(support),
         pipeline_service=PipelineService(support, translation_service),

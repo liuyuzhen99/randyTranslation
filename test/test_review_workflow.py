@@ -11,14 +11,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect
 
 import api.service as api_service
-from application.services.phase3_catalog_service import CandidateDiscoveryPayload, Phase3Providers
+from application.services.artist_catalog_service import CandidateDiscoveryPayload, ArtistCatalogProviders
 from domain.entities import ArtifactRecord
 from domain.enums import CandidateStatus
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyCandidateRepository
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemySubtitleRepository
 
 
-class Phase4WorkflowTests(unittest.TestCase):
+class ReviewWorkflowTests(unittest.TestCase):
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
     def _create_app(self, temp_root: str):
@@ -26,17 +26,18 @@ class Phase4WorkflowTests(unittest.TestCase):
             "DEEPSEEK_API_KEY": "test-key",
             "DEEPSEEK_BASE_URL": "https://example.local",
             "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-            "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase4.db')}",
-            "PHASE2_AUTO_CREATE_SCHEMA": "true",
+            "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'review-workflow.db')}",
+            "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
         }
-        providers = Phase3Providers(
+        providers = ArtistCatalogProviders(
             followed_artists_lookup=lambda: [],
-            channel_lookup=lambda artist: artist.yt_channel_id or "UC_PHASE4",
+            channel_lookup=lambda artist: artist.yt_channel_id or "UC_REVIEW_WORKFLOW",
             candidate_lookup=lambda artist, days: [
                 CandidateDiscoveryPayload(
-                    video_id="video-phase4-1",
-                    title="Phase 4 Official Video",
-                    source_url="https://youtube.test/watch?v=video-phase4-1",
+                    video_id="video-review-workflow-1",
+                    title="Review Workflow Official Video",
+                    source_url="https://youtube.test/watch?v=video-review-workflow-1",
                     published_at=datetime(2026, 4, 20, 10, 0, 0),
                 )
             ],
@@ -44,23 +45,23 @@ class Phase4WorkflowTests(unittest.TestCase):
         patcher = patch.dict(os.environ, env, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
-        app = api_service.create_app(phase3_providers=providers)
-        app.state.phase3_catalog_service.sync_followed_artists(trigger="manual")
-        if app.state.phase3_catalog_service.artist_repository.get("artist-1") is None:
+        app = api_service.create_app(artist_catalog_providers=providers)
+        app.state.artist_catalog_service.sync_followed_artists(trigger="manual")
+        if app.state.artist_catalog_service.artist_repository.get("artist-1") is None:
             from domain.entities import Artist
 
-            app.state.phase3_catalog_service.artist_repository.upsert(
+            app.state.artist_catalog_service.artist_repository.upsert(
                 Artist(spotify_id="artist-1", name="Doechii")
             )
-        app.state.phase3_catalog_service.resync_artist("artist-1", trigger="manual")
-        candidate = app.state.phase3_catalog_service.candidate_repository.list_for_artist("artist-1")[0]
-        app.state.phase4_workflow_services.pipeline_service.add_candidate(
+        app.state.artist_catalog_service.resync_artist("artist-1", trigger="manual")
+        candidate = app.state.artist_catalog_service.candidate_repository.list_for_artist("artist-1")[0]
+        app.state.review_workflow_services.pipeline_service.add_candidate(
             candidate.candidate_id,
             actor_id="test-setup",
         )
         return app
 
-    def test_phase4_review_workflow_endpoints(self):
+    def test_review_workflow_endpoints(self):
         with TemporaryDirectory() as temp_root:
             app = self._create_app(temp_root)
 
@@ -103,13 +104,13 @@ class Phase4WorkflowTests(unittest.TestCase):
                                 owner_type="candidate",
                                 owner_id=candidate_id,
                                 artifact_type="final_video",
-                                object_uri="local://phase4/final.mp4",
-                                object_key="phase4/final.mp4",
-                                bucket="phase4-test",
+                                object_uri="local://review-workflow/final.mp4",
+                                object_key="review-workflow/final.mp4",
+                                bucket="review-workflow-test",
                                 storage_provider="local",
                                 candidate_id=candidate_id,
                                 size_bytes=128,
-                                checksum_sha256="phase4-checksum",
+                                checksum_sha256="review-workflow-checksum",
                             )
                         )
                     approve_response = client.post(
@@ -224,7 +225,7 @@ class Phase4WorkflowTests(unittest.TestCase):
         with TemporaryDirectory() as temp_root:
             app = self._create_app(temp_root)
             command_service = StubCommandService()
-            app.state.phase6_async_pipeline_services = (command_service, None)
+            app.state.async_pipeline_services = (command_service, None)
 
             with TestClient(app) as client:
                 initial_queue = client.get("/v1/audit-queue").json()
@@ -264,10 +265,10 @@ class Phase4WorkflowTests(unittest.TestCase):
                     "Candidate must be added to pipeline before render",
                 )
 
-    def test_render_requires_phase6_async_pipeline(self):
+    def test_render_requires_async_pipeline(self):
         with TemporaryDirectory() as temp_root:
             app = self._create_app(temp_root)
-            app.state.phase6_async_pipeline_services = None
+            app.state.async_pipeline_services = None
 
             with TestClient(app) as client:
                 initial_queue = client.get("/v1/audit-queue").json()
@@ -278,10 +279,10 @@ class Phase4WorkflowTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 503)
                 self.assertEqual(
                     response.json()["error"]["message"],
-                    "Phase 6 async pipeline is not enabled",
+                    "Async pipeline is not enabled",
                 )
 
-    def test_phase4_v1_error_envelope_and_request_id(self):
+    def test_review_workflow_v1_error_envelope_and_request_id(self):
         with TemporaryDirectory() as temp_root:
             app = self._create_app(temp_root)
 
@@ -293,7 +294,7 @@ class Phase4WorkflowTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 422)
                 self.assertIn("request_id", response.json()["meta"])
 
-    def test_phase4_ai_stage_ingest_endpoints(self):
+    def test_review_workflow_ai_stage_ingest_endpoints(self):
         with TemporaryDirectory() as temp_root:
             app = self._create_app(temp_root)
 
@@ -366,7 +367,7 @@ class Phase4WorkflowTests(unittest.TestCase):
                 )
 
                 subtitle_repository = SQLAlchemySubtitleRepository(app.state.session_factory)
-                subtitles = subtitle_repository.list_for_video("video-phase4-1")
+                subtitles = subtitle_repository.list_for_video("video-review-workflow-1")
                 self.assertEqual(len(subtitles), 2)
                 self.assertEqual(subtitles[0].zh_text, "又到了星期天")
                 self.assertEqual(subtitles[1].zh_text, "我需要你的光")
@@ -396,7 +397,7 @@ class Phase4WorkflowTests(unittest.TestCase):
                     )
                 )
 
-    def test_phase4_audit_queue_can_filter_rejected_reviews(self):
+    def test_audit_queue_can_filter_rejected_reviews(self):
         with TemporaryDirectory() as temp_root:
             app = self._create_app(temp_root)
 
@@ -423,9 +424,9 @@ class Phase4WorkflowTests(unittest.TestCase):
                 self.assertEqual(all_queue["pagination"]["total"], 1)
                 self.assertEqual(all_queue["items"][0]["status"], "rejected")
 
-    def test_phase4_alembic_head_creates_workflow_tables(self):
+    def test_alembic_head_creates_review_workflow_tables(self):
         with TemporaryDirectory() as temp_root:
-            db_path = os.path.join(temp_root, "phase4-migration.db")
+            db_path = os.path.join(temp_root, "review-workflow-migration.db")
             alembic_cfg = Config(str(self.PROJECT_ROOT / "alembic.ini"))
             alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
             alembic_cfg.set_main_option(

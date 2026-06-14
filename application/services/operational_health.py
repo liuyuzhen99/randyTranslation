@@ -22,7 +22,7 @@ class HealthCheckResult:
     checks: dict[str, dict]
 
 
-class Phase7HealthService:
+class OperationalHealthService:
     def __init__(
         self,
         *,

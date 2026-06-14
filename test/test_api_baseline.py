@@ -16,13 +16,26 @@ class NoopOrchestrator:
         return None
 
 
-class Phase0ApiBaselineTests(unittest.TestCase):
-    def setUp(self):
-        self.stack = ExitStack()
-        self.stack.enter_context(patch.dict(os.environ, {
+class ApiBaselineTests(unittest.TestCase):
+    def _base_env(self, **overrides):
+        env = {
             "DEEPSEEK_API_KEY": "test-key",
             "DEEPSEEK_BASE_URL": "https://example.local",
-        }, clear=False))
+            "DATABASE_URL": "",
+            "RABBITMQ_URL": "",
+            "VECTOR_REPOSITORY_BACKEND": "sqlite",
+            "SHADOW_WRITE_ENABLED": "false",
+            "DUAL_WRITE_RECONCILE_ENABLED": "false",
+            "OUTBOX_DISPATCH_ENABLED": "false",
+            "ASYNC_PIPELINE_ENABLED": "false",
+            "PIPELINE_SERVICE_WORKER_ENABLED": "false",
+        }
+        env.update(overrides)
+        return env
+
+    def setUp(self):
+        self.stack = ExitStack()
+        self.stack.enter_context(patch.dict(os.environ, self._base_env(), clear=False))
 
         self.repo = InMemoryJobRepository()
         self.job_service = JobService(self.repo)
@@ -30,6 +43,9 @@ class Phase0ApiBaselineTests(unittest.TestCase):
 
         api_service.app.state.job_service = self.job_service
         api_service.app.state.orchestrator = self.orchestrator
+        api_service.app.state.async_pipeline_services = None
+        api_service.app.state.outbox_dispatcher = None
+        api_service.app.state.reconcile_service = None
         api_service.job_service = self.job_service
         api_service.orchestrator = self.orchestrator
         self.client = TestClient(api_service.app)
@@ -80,20 +96,20 @@ class Phase0ApiBaselineTests(unittest.TestCase):
 
     def test_sqlite_backend_persists_jobs_across_app_rebuild(self):
         with TemporaryDirectory() as temp_root:
-            env = {
-                "DEEPSEEK_API_KEY": "test-key",
-                "DEEPSEEK_BASE_URL": "https://example.local",
+            env = self._base_env(**{
                 "JOB_REPOSITORY_BACKEND": "sqlite",
                 "JOB_REPOSITORY_SQLITE_PATH": os.path.join(temp_root, "jobs.db"),
                 "LOG_FILE_PATH": os.path.join(temp_root, "app.log"),
-            }
+            })
 
             with patch.dict(os.environ, env, clear=False):
                 first_app = api_service.create_app()
+                first_app.state.orchestrator = NoopOrchestrator()
                 with TestClient(first_app) as first_client:
                     task_id = first_client.post("/create_task", json={"song_name": "Count Me Out"}).json()["task_id"]
 
                 second_app = api_service.create_app()
+                second_app.state.orchestrator = NoopOrchestrator()
                 with TestClient(second_app) as second_client:
                     response = second_client.get(f"/check_status/{task_id}")
                     self.assertEqual(response.status_code, 200)
@@ -101,47 +117,46 @@ class Phase0ApiBaselineTests(unittest.TestCase):
 
     def test_sqlalchemy_backend_persists_jobs_across_app_rebuild(self):
         with TemporaryDirectory() as temp_root:
-            env = {
-                "DEEPSEEK_API_KEY": "test-key",
-                "DEEPSEEK_BASE_URL": "https://example.local",
+            env = self._base_env(**{
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase2.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'core.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
                 "LOG_FILE_PATH": os.path.join(temp_root, "app.log"),
-            }
+            })
 
             with patch.dict(os.environ, env, clear=False):
                 first_app = api_service.create_app()
+                first_app.state.orchestrator = NoopOrchestrator()
                 with TestClient(first_app) as first_client:
                     task_id = first_client.post("/create_task", json={"song_name": "Worldwide Steppers"}).json()["task_id"]
 
                 second_app = api_service.create_app()
+                second_app.state.orchestrator = NoopOrchestrator()
                 with TestClient(second_app) as second_client:
                     response = second_client.get(f"/check_status/{task_id}")
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json()["song_name"], "Worldwide Steppers")
 
-    def test_phase2_reconcile_endpoint_returns_report_and_writes_file(self):
+    def test_dual_write_reconcile_endpoint_returns_report_and_writes_file(self):
         with TemporaryDirectory() as temp_root:
-            report_path = os.path.join(temp_root, "reports", "phase2-reconcile.json")
-            env = {
-                "DEEPSEEK_API_KEY": "test-key",
-                "DEEPSEEK_BASE_URL": "https://example.local",
+            report_path = os.path.join(temp_root, "reports", "dual-write-reconcile.json")
+            env = self._base_env(**{
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase2.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
-                "PHASE2_SHADOW_WRITE_ENABLED": "true",
-                "PHASE2_RECONCILE_ENABLED": "true",
-                "PHASE2_RECONCILE_REPORT_PATH": report_path,
-                "PHASE2_RECONCILE_MAX_MISSING_JOBS": "0",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'core.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "SHADOW_WRITE_ENABLED": "true",
+                "DUAL_WRITE_RECONCILE_ENABLED": "true",
+                "DUAL_WRITE_RECONCILE_REPORT_PATH": report_path,
+                "DUAL_WRITE_RECONCILE_MAX_MISSING_JOBS": "0",
                 "LOG_FILE_PATH": os.path.join(temp_root, "app.log"),
-            }
+            })
 
             with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app()
+                app.state.orchestrator = NoopOrchestrator()
                 with TestClient(app) as client:
                     client.post("/create_task", json={"song_name": "Silent Hill"})
-                    response = client.get("/internal/phase2/reconcile")
+                    response = client.get("/internal/dual-write/reconcile")
 
             self.assertEqual(response.status_code, 200)
             payload = response.json()
@@ -150,31 +165,29 @@ class Phase0ApiBaselineTests(unittest.TestCase):
             self.assertIn("is_consistent", payload["report"])
             self.assertIn("is_within_threshold", payload["report"])
 
-    def test_phase2_outbox_dispatch_endpoint_returns_503_without_real_publisher(self):
+    def test_outbox_dispatch_endpoint_returns_503_without_real_publisher(self):
         with TemporaryDirectory() as temp_root:
-            env = {
-                "DEEPSEEK_API_KEY": "test-key",
-                "DEEPSEEK_BASE_URL": "https://example.local",
+            env = self._base_env(**{
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase2.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
-                "PHASE2_SHADOW_WRITE_ENABLED": "true",
-                "PHASE2_OUTBOX_DISPATCH_ENABLED": "true",
-                "PHASE6_ASYNC_PIPELINE_ENABLED": "false",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'core.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "SHADOW_WRITE_ENABLED": "true",
+                "OUTBOX_DISPATCH_ENABLED": "true",
+                "ASYNC_PIPELINE_ENABLED": "false",
                 "LOG_FILE_PATH": os.path.join(temp_root, "app.log"),
-            }
+            })
 
             with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app()
                 app.state.orchestrator = NoopOrchestrator()
                 with TestClient(app) as client:
                     client.post("/create_task", json={"song_name": "Element"})
-                    response = client.post("/internal/phase2/outbox/dispatch")
+                    response = client.post("/internal/outbox/dispatch")
 
             self.assertEqual(response.status_code, 503)
-            self.assertEqual(response.json(), {"detail": "Phase 2 outbox dispatcher is not enabled"})
+            self.assertEqual(response.json(), {"detail": "Outbox dispatcher is not enabled"})
 
-    def test_phase2_outbox_dispatch_endpoint_works_with_injected_publisher(self):
+    def test_outbox_dispatch_endpoint_works_with_injected_publisher(self):
         with TemporaryDirectory() as temp_root:
             published_calls = []
 
@@ -182,24 +195,22 @@ class Phase0ApiBaselineTests(unittest.TestCase):
                 def publish(self, topic: str, payload: str, correlation_id=None) -> None:
                     published_calls.append((topic, payload, correlation_id))
 
-            env = {
-                "DEEPSEEK_API_KEY": "test-key",
-                "DEEPSEEK_BASE_URL": "https://example.local",
+            env = self._base_env(**{
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase2.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
-                "PHASE2_SHADOW_WRITE_ENABLED": "true",
-                "PHASE2_OUTBOX_DISPATCH_ENABLED": "true",
-                "PHASE6_ASYNC_PIPELINE_ENABLED": "false",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'core.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "SHADOW_WRITE_ENABLED": "true",
+                "OUTBOX_DISPATCH_ENABLED": "true",
+                "ASYNC_PIPELINE_ENABLED": "false",
                 "LOG_FILE_PATH": os.path.join(temp_root, "app.log"),
-            }
+            })
 
             with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app(outbox_publisher=Publisher())
                 app.state.orchestrator = NoopOrchestrator()
                 with TestClient(app) as client:
                     client.post("/create_task", json={"song_name": "Element"})
-                    response = client.post("/internal/phase2/outbox/dispatch")
+                    response = client.post("/internal/outbox/dispatch")
 
             self.assertEqual(response.status_code, 200)
             payload = response.json()

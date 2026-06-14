@@ -4,7 +4,7 @@ import unittest
 from api.config import KNOWN_ENV_VARS
 
 
-class Phase0EnvTemplateContractTests(unittest.TestCase):
+class EnvTemplateContractTests(unittest.TestCase):
     def test_env_example_covers_known_environment_variables(self):
         env_example = (
             pathlib.Path(__file__).resolve().parents[1] / ".env.example"

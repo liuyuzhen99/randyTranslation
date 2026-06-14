@@ -5,10 +5,10 @@ import json
 import os
 from dataclasses import asdict
 
-from application.services.phase8_vectors import (
+from application.services.vector_migration import (
     AUDIT_STYLE_MEMORY,
     TRANSLATION_MEMORY,
-    Phase8VectorMigrationService,
+    VectorMigrationService,
     build_embedding_provider,
 )
 from infrastructure.persistence.sqlite_repositories import SQLiteVectorRepository
@@ -16,8 +16,11 @@ from infrastructure.vector.qdrant_repository import QdrantVectorRepository
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Phase 8 Qdrant vector backfill/parity drill.")
-    parser.add_argument("--source-sqlite", default=os.getenv("PHASE8_SOURCE_SQLITE", "data/jobs.db"))
+    parser = argparse.ArgumentParser(description="Qdrant vector backfill/parity drill.")
+    parser.add_argument(
+        "--source-sqlite",
+        default=os.getenv("VECTOR_SOURCE_SQLITE", os.getenv("PHASE8_SOURCE_SQLITE", "data/jobs.db")),
+    )
     parser.add_argument("--namespace", action="append", dest="namespaces")
     parser.add_argument("--qdrant-url", default=os.getenv("QDRANT_URL", ""))
     parser.add_argument("--qdrant-api-key", default=os.getenv("QDRANT_API_KEY", ""))
@@ -44,7 +47,7 @@ def main() -> int:
             embedding_provider=embedding_provider,
         )
 
-    service = Phase8VectorMigrationService(
+    service = VectorMigrationService(
         source_repository=source,
         target_repository=target,
         embedding_provider=embedding_provider,

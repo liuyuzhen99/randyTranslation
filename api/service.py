@@ -21,24 +21,24 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from application.services.phase3_catalog_service import ArtistListFilters, CandidateListFilters
+from application.services.artist_catalog_service import ArtistListFilters, CandidateListFilters
 from application.services.artifact_lifecycle_service import (
     ArtifactLifecyclePolicy,
     ArtifactLifecycleService,
 )
-from application.services.phase4_workflow_service import (
+from application.services.review_workflow_service import (
     ReviewConflictError,
 )
 from api.config import (
     create_artifact_repository,
     create_job_repository,
     create_media_storage,
-    create_phase4_workflow_services,
-    create_phase6_async_pipeline_services,
-    create_phase3_catalog_service,
-    create_phase2_outbox_dispatcher,
-    create_phase2_reconcile_service,
-    create_phase2_shadow_write_service,
+    create_review_workflow_services,
+    create_async_pipeline_services,
+    create_artist_catalog_service,
+    create_outbox_dispatcher,
+    create_dual_write_reconcile_service,
+    create_shadow_write_service,
     create_sqlalchemy_session_factory,
     create_vector_repository,
     load_runtime_settings,
@@ -47,7 +47,7 @@ from api.config import (
 from application.services.job_service import JobService
 from application.services.async_pipeline import InProcessPipelineWorker
 from application.services.pipeline_orchestrator import PipelineOrchestrator
-from application.services.phase9_cutover import Phase9CutoverReadinessService
+from application.services.cutover_readiness import CutoverReadinessService
 from domain.time_utils import utc_now
 from domain.entities import OutboxEvent
 from domain.enums import CandidateStatus, JobStatus, OutboxStatus, ReviewType, StageStatus, StageType
@@ -56,7 +56,7 @@ import json
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyPipelineStageExecutionRepository
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyOutboxRepository
 from infrastructure.pipeline.legacy_producer_adapter import create_default_producer_backend
-from application.services.phase7_tracing import phase7_span
+from application.services.request_tracing import request_span
 from utils.logger_manager import LogManager
 
 system_logger = LogManager.get_task_logger("SYSTEM")
@@ -131,21 +131,21 @@ class ArtistResyncResponse(BaseModel):
     discovery_run_id: str
 
 
-class Phase3SpotifySyncResponse(BaseModel):
+class SpotifyArtistSyncResponse(BaseModel):
     synced_count: int
     created_count: int
     updated_count: int
     completed_at: str
 
 
-class Phase3BatchRefreshResponse(BaseModel):
+class ArtistBatchRefreshResponse(BaseModel):
     requested: int
     refreshed: int
     failed: int
     failures: list[dict]
 
 
-class Phase4ListResponse(BaseModel):
+class ReviewListResponse(BaseModel):
     items: list[dict]
     pagination: PaginationResponse
     meta: ResponseMeta
@@ -275,22 +275,22 @@ class RuntimeServices:
     reconcile_service: object
     outbox_dispatcher: object
     vector_repository: object
-    phase3_catalog_service: object
-    phase4_workflow_services: object
+    artist_catalog_service: object
+    review_workflow_services: object
     artifact_lifecycle_service: object
-    phase6_async_pipeline_services: object
+    async_pipeline_services: object
     session_factory: object
     runtime_settings: object
 
 
-def build_runtime_services(outbox_publisher=None, phase3_providers=None):
+def build_runtime_services(outbox_publisher=None, artist_catalog_providers=None):
     runtime_settings = load_runtime_settings()
     session_factory = create_sqlalchemy_session_factory(runtime_settings=runtime_settings)
     job_repository = create_job_repository(
         runtime_settings=runtime_settings,
         session_factory=session_factory,
     )
-    shadow_write_service = create_phase2_shadow_write_service(
+    shadow_write_service = create_shadow_write_service(
         runtime_settings=runtime_settings,
         session_factory=session_factory,
     )
@@ -316,12 +316,12 @@ def build_runtime_services(outbox_publisher=None, phase3_providers=None):
             final_artifact_retention_days=runtime_settings.artifact_final_retention_days,
         ),
     )
-    reconcile_service = create_phase2_reconcile_service(
+    reconcile_service = create_dual_write_reconcile_service(
         primary_job_repository=job_repository,
         runtime_settings=runtime_settings,
         session_factory=session_factory,
     )
-    outbox_dispatcher = create_phase2_outbox_dispatcher(
+    outbox_dispatcher = create_outbox_dispatcher(
         publisher=outbox_publisher,
         runtime_settings=runtime_settings,
         session_factory=session_factory,
@@ -331,22 +331,22 @@ def build_runtime_services(outbox_publisher=None, phase3_providers=None):
     except Exception as exc:
         system_logger.warning("Vector repository is unavailable; RAG retrieval will be skipped. error=%s", exc)
         vector_repository = None
-    phase3_catalog_service = create_phase3_catalog_service(
-        providers=phase3_providers,
+    artist_catalog_service = create_artist_catalog_service(
+        providers=artist_catalog_providers,
         runtime_settings=runtime_settings,
         session_factory=session_factory,
     )
-    phase4_workflow_services = create_phase4_workflow_services(
+    review_workflow_services = create_review_workflow_services(
         runtime_settings=runtime_settings,
         session_factory=session_factory,
     )
-    phase6_async_pipeline_services = create_phase6_async_pipeline_services(
+    async_pipeline_services = create_async_pipeline_services(
         runtime_settings=runtime_settings,
         session_factory=session_factory,
         job_repository=job_repository,
         media_storage=media_storage,
         producer_backend_factory=create_default_producer_backend,
-        workflow_services=phase4_workflow_services,
+        workflow_services=review_workflow_services,
         artifact_repository=artifact_repository,
         vector_repository=vector_repository,
     )
@@ -360,10 +360,10 @@ def build_runtime_services(outbox_publisher=None, phase3_providers=None):
         reconcile_service=reconcile_service,
         outbox_dispatcher=outbox_dispatcher,
         vector_repository=vector_repository,
-        phase3_catalog_service=phase3_catalog_service,
-        phase4_workflow_services=phase4_workflow_services,
+        artist_catalog_service=artist_catalog_service,
+        review_workflow_services=review_workflow_services,
         artifact_lifecycle_service=artifact_lifecycle_service,
-        phase6_async_pipeline_services=phase6_async_pipeline_services,
+        async_pipeline_services=async_pipeline_services,
         session_factory=session_factory,
         runtime_settings=runtime_settings,
     )
@@ -374,37 +374,39 @@ async def app_lifespan(app_instance: FastAPI):
     validate_startup_env()
     worker = None
     runtime_settings = getattr(app_instance.state, "runtime_settings", None)
-    services = getattr(app_instance.state, "phase6_async_pipeline_services", None)
+    services = getattr(app_instance.state, "async_pipeline_services", None)
     session_factory = getattr(app_instance.state, "session_factory", None)
     if (
         runtime_settings is not None
-        and runtime_settings.phase6_async_pipeline_enabled
-        and runtime_settings.phase6_service_worker_enabled
+        and runtime_settings.async_pipeline_enabled
+        and runtime_settings.pipeline_service_worker_enabled
         and services is not None
         and session_factory is not None
     ):
-        _command_service, phase6_worker = services
+        _command_service, pipeline_worker = services
         worker = InProcessPipelineWorker(
             outbox_repository=SQLAlchemyOutboxRepository(session_factory),
-            worker=phase6_worker,
-            poll_interval_seconds=runtime_settings.phase6_service_worker_poll_seconds,
+            worker=pipeline_worker,
+            poll_interval_seconds=runtime_settings.pipeline_service_worker_poll_seconds,
         )
-        app_instance.state.phase6_service_worker = worker
+        app_instance.state.pipeline_service_worker = worker
         worker.start()
-        system_logger.info("Phase 6 in-process worker started with service lifespan.")
+        system_logger.info("Pipeline in-process worker started with service lifespan.")
     try:
         yield
     finally:
         if worker is not None:
             worker.stop()
-            system_logger.info("Phase 6 in-process worker stopped.")
+            system_logger.info("Pipeline in-process worker stopped.")
 
 
-def create_app(outbox_publisher=None, phase3_providers=None) -> FastAPI:
+def create_app(outbox_publisher=None, artist_catalog_providers=None, phase3_providers=None) -> FastAPI:
+    if artist_catalog_providers is None:
+        artist_catalog_providers = phase3_providers
     app_instance = FastAPI(title="Hip-hop MV 自动化工坊 API", lifespan=app_lifespan)
     svc = build_runtime_services(
         outbox_publisher=outbox_publisher,
-        phase3_providers=phase3_providers,
+        artist_catalog_providers=artist_catalog_providers,
     )
 
     app_instance.state.job_repository = svc.job_repository
@@ -416,12 +418,16 @@ def create_app(outbox_publisher=None, phase3_providers=None) -> FastAPI:
     app_instance.state.reconcile_service = svc.reconcile_service
     app_instance.state.outbox_dispatcher = svc.outbox_dispatcher
     app_instance.state.vector_repository = svc.vector_repository
-    app_instance.state.phase3_catalog_service = svc.phase3_catalog_service
-    app_instance.state.phase4_workflow_services = svc.phase4_workflow_services
+    app_instance.state.artist_catalog_service = svc.artist_catalog_service
+    app_instance.state.review_workflow_services = svc.review_workflow_services
     app_instance.state.artifact_lifecycle_service = svc.artifact_lifecycle_service
-    app_instance.state.phase6_async_pipeline_services = svc.phase6_async_pipeline_services
+    app_instance.state.async_pipeline_services = svc.async_pipeline_services
     app_instance.state.session_factory = svc.session_factory
     app_instance.state.runtime_settings = svc.runtime_settings
+    app_instance.state.pipeline_service_worker = None
+    app_instance.state.phase3_catalog_service = svc.artist_catalog_service
+    app_instance.state.phase4_workflow_services = svc.review_workflow_services
+    app_instance.state.phase6_async_pipeline_services = svc.async_pipeline_services
     app_instance.state.phase6_service_worker = None
 
     def build_response_meta(
@@ -475,7 +481,7 @@ def create_app(outbox_publisher=None, phase3_providers=None) -> FastAPI:
             or f"req-{utc_now().strftime('%Y%m%d%H%M%S%f')}"
         )
         request.state.request_id = request_id
-        with phase7_span(
+        with request_span(
             "api.request",
             {
                 "http.method": request.method,
@@ -579,8 +585,12 @@ orchestrator = app.state.orchestrator
 shadow_write_service = app.state.shadow_write_service
 reconcile_service = app.state.reconcile_service
 outbox_dispatcher = app.state.outbox_dispatcher
-phase3_catalog_service = app.state.phase3_catalog_service
-phase4_workflow_services = app.state.phase4_workflow_services
+artist_catalog_service = app.state.artist_catalog_service
+review_workflow_services = app.state.review_workflow_services
+async_pipeline_services = app.state.async_pipeline_services
+phase3_catalog_service = artist_catalog_service
+phase4_workflow_services = review_workflow_services
+phase6_async_pipeline_services = async_pipeline_services
 artifact_lifecycle_service = app.state.artifact_lifecycle_service
 session_factory = app.state.session_factory
 runtime_settings = app.state.runtime_settings

@@ -67,7 +67,7 @@ class CleanupFailingStorage(LocalFilesystemMediaStorage):
         raise RuntimeError("cleanup failed")
 
 
-class Phase1LayeredArchitectureTests(unittest.TestCase):
+class LayeredArchitectureTests(unittest.TestCase):
     def test_job_service_create_and_list(self):
         repo = InMemoryJobRepository()
         service = JobService(repo)

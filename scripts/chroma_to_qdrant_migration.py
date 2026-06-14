@@ -6,7 +6,7 @@ import os
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from application.services.phase8_vectors import (
+from application.services.vector_migration import (
     build_embedding_provider,
     deterministic_vector_id,
 )
@@ -179,9 +179,9 @@ def main() -> int:
                     text=record.text,
                     metadata={
                         **record.metadata,
-                        "phase8_source_namespace": record.namespace,
-                        "phase8_source_vector_id": record.vector_id,
-                        "phase8_deterministic_id": deterministic_vector_id(record.namespace, record.vector_id),
+                        "vector_source_namespace": record.namespace,
+                        "vector_source_vector_id": record.vector_id,
+                        "vector_deterministic_id": deterministic_vector_id(record.namespace, record.vector_id),
                     },
                     embedding=record.embedding or embedding_provider.embed(record.text),
                 )

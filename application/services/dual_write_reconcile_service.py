@@ -16,7 +16,7 @@ from infrastructure.persistence.sqlalchemy_repositories import (
 
 
 @dataclass(frozen=True)
-class Phase2ReconcileThresholds:
+class DualWriteReconcileThresholds:
     max_missing_jobs: int = 0
     max_job_field_mismatches: int = 0
     max_invalid_outbox_payloads: int = 0
@@ -24,13 +24,13 @@ class Phase2ReconcileThresholds:
 
 
 @dataclass
-class Phase2ReconcileReport:
+class DualWriteReconcileReport:
     generated_at: str
     primary_job_count: int
     shadow_job_count: int
     pending_outbox_count: int
     shadow_job_event_count: int
-    thresholds: Phase2ReconcileThresholds = field(default_factory=Phase2ReconcileThresholds)
+    thresholds: DualWriteReconcileThresholds = field(default_factory=DualWriteReconcileThresholds)
     missing_job_ids_in_shadow: list[str] = field(default_factory=list)
     mismatched_job_fields: dict[str, list[str]] = field(default_factory=dict)
     invalid_outbox_event_ids: list[str] = field(default_factory=list)
@@ -76,22 +76,22 @@ class Phase2ReconcileReport:
         }
 
 
-class Phase2ReconcileService:
-    """Compare primary runtime job state with the Phase 2 shadow-write database."""
+class DualWriteReconcileService:
+    """Compare primary runtime job state with the SQLAlchemy shadow-write database."""
 
     def __init__(
         self,
         primary_job_repository: JobRepository,
         session_factory: SQLAlchemySessionFactory,
-        thresholds: Phase2ReconcileThresholds | None = None,
+        thresholds: DualWriteReconcileThresholds | None = None,
     ) -> None:
         self.primary_job_repository = primary_job_repository
         self.shadow_job_repository = SQLAlchemyJobRepository(session_factory)
         self.shadow_job_event_repository = SQLAlchemyJobEventRepository(session_factory)
         self.shadow_outbox_repository = SQLAlchemyOutboxRepository(session_factory)
-        self.thresholds = thresholds or Phase2ReconcileThresholds()
+        self.thresholds = thresholds or DualWriteReconcileThresholds()
 
-    def generate_report(self) -> Phase2ReconcileReport:
+    def generate_report(self) -> DualWriteReconcileReport:
         primary_jobs = self.primary_job_repository.list_all()
         shadow_jobs = self.shadow_job_repository.list_all()
 
@@ -131,7 +131,7 @@ class Phase2ReconcileService:
             if mismatches:
                 mismatched_outbox_payloads[event.event_id] = mismatches
 
-        return Phase2ReconcileReport(
+        return DualWriteReconcileReport(
             generated_at=utc_now().isoformat(),
             primary_job_count=len(primary_jobs),
             shadow_job_count=len(shadow_jobs),
@@ -144,7 +144,7 @@ class Phase2ReconcileService:
             mismatched_outbox_payloads=mismatched_outbox_payloads,
         )
 
-    def write_report(self, report_path: str) -> Phase2ReconcileReport:
+    def write_report(self, report_path: str) -> DualWriteReconcileReport:
         report = self.generate_report()
         path = Path(report_path)
         path.parent.mkdir(parents=True, exist_ok=True)

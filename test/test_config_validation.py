@@ -6,24 +6,24 @@ from unittest.mock import patch
 
 from api.config import (
     create_job_repository,
-    create_phase2_outbox_dispatcher,
-    create_phase2_reconcile_service,
-    create_phase2_shadow_write_service,
+    create_outbox_dispatcher,
+    create_dual_write_reconcile_service,
+    create_shadow_write_service,
     create_sqlalchemy_session_factory,
     create_vector_repository,
     load_runtime_settings,
     validate_startup_env,
 )
 from application.services.outbox_dispatcher import OutboxDispatcher
-from application.services.phase2_reconcile_service import Phase2ReconcileService
-from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
+from application.services.dual_write_reconcile_service import DualWriteReconcileService
+from application.services.shadow_write_service import ShadowWriteService
 from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyJobRepository
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemySessionFactory
 from infrastructure.persistence.sqlite_repositories import SQLiteJobRepository, SQLiteVectorRepository
 
 
-class Phase0ConfigValidationTests(unittest.TestCase):
+class ConfigValidationTests(unittest.TestCase):
     def test_validate_startup_env_raises_when_required_missing(self):
         with self.assertRaises(RuntimeError) as ctx:
             validate_startup_env({})
@@ -43,52 +43,52 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         self.assertEqual(settings.job_repository_backend, "memory")
         self.assertEqual(settings.job_repository_sqlite_path, "")
         self.assertEqual(settings.database_url, "")
-        self.assertFalse(settings.phase2_shadow_write_enabled)
-        self.assertFalse(settings.phase2_reconcile_enabled)
-        self.assertEqual(settings.phase2_reconcile_report_path, "")
-        self.assertEqual(settings.phase2_reconcile_max_missing_jobs, 0)
-        self.assertEqual(settings.phase2_reconcile_max_job_field_mismatches, 0)
-        self.assertEqual(settings.phase2_reconcile_max_invalid_outbox_payloads, 0)
-        self.assertEqual(settings.phase2_reconcile_max_outbox_payload_mismatches, 0)
-        self.assertFalse(settings.phase2_outbox_dispatch_enabled)
-        self.assertFalse(settings.phase6_async_pipeline_enabled)
-        self.assertTrue(settings.phase6_service_worker_enabled)
-        self.assertEqual(settings.phase6_service_worker_poll_seconds, 1.0)
-        self.assertEqual(settings.phase6_max_stage_attempts, 3)
-        self.assertEqual(settings.phase6_retry_backoff_base_seconds, 30)
+        self.assertFalse(settings.shadow_write_enabled)
+        self.assertFalse(settings.dual_write_reconcile_enabled)
+        self.assertEqual(settings.dual_write_reconcile_report_path, "")
+        self.assertEqual(settings.dual_write_reconcile_max_missing_jobs, 0)
+        self.assertEqual(settings.dual_write_reconcile_max_job_field_mismatches, 0)
+        self.assertEqual(settings.dual_write_reconcile_max_invalid_outbox_payloads, 0)
+        self.assertEqual(settings.dual_write_reconcile_max_outbox_payload_mismatches, 0)
+        self.assertFalse(settings.outbox_dispatch_enabled)
+        self.assertFalse(settings.async_pipeline_enabled)
+        self.assertTrue(settings.pipeline_service_worker_enabled)
+        self.assertEqual(settings.pipeline_service_worker_poll_seconds, 1.0)
+        self.assertEqual(settings.pipeline_max_stage_attempts, 3)
+        self.assertEqual(settings.pipeline_retry_backoff_base_seconds, 30)
         self.assertEqual(settings.vector_repository_backend, "sqlite")
         self.assertEqual(settings.vector_embedding_provider, "bge")
         self.assertEqual(settings.vector_embedding_dimension, 1024)
         self.assertEqual(settings.qdrant_collection_prefix, "")
-        self.assertEqual(settings.phase9_cutover_read_source, "legacy")
-        self.assertFalse(settings.phase9_schema_freeze_enabled)
-        self.assertTrue(settings.phase9_rollback_enabled)
-        self.assertEqual(settings.phase9_stability_window_days, 7)
-        self.assertFalse(settings.phase9_shadow_traffic_enabled)
+        self.assertEqual(settings.cutover_read_source, "legacy")
+        self.assertFalse(settings.schema_freeze_enabled)
+        self.assertTrue(settings.rollback_enabled)
+        self.assertEqual(settings.stability_window_days, 7)
+        self.assertFalse(settings.shadow_traffic_enabled)
 
     def test_load_runtime_settings_reads_reconcile_report_path(self):
         settings = load_runtime_settings(
-            {"PHASE2_RECONCILE_REPORT_PATH": "./data/reports/phase2.json"}
+            {"DUAL_WRITE_RECONCILE_REPORT_PATH": "./data/reports/dual-write.json"}
         )
-        self.assertEqual(settings.phase2_reconcile_report_path, "./data/reports/phase2.json")
+        self.assertEqual(settings.dual_write_reconcile_report_path, "./data/reports/dual-write.json")
 
     def test_load_runtime_settings_reads_reconcile_thresholds(self):
         settings = load_runtime_settings(
             {
-                "PHASE2_RECONCILE_MAX_MISSING_JOBS": "2",
-                "PHASE2_RECONCILE_MAX_JOB_FIELD_MISMATCHES": "3",
-                "PHASE2_RECONCILE_MAX_INVALID_OUTBOX_PAYLOADS": "4",
-                "PHASE2_RECONCILE_MAX_OUTBOX_PAYLOAD_MISMATCHES": "5",
+                "DUAL_WRITE_RECONCILE_MAX_MISSING_JOBS": "2",
+                "DUAL_WRITE_RECONCILE_MAX_JOB_FIELD_MISMATCHES": "3",
+                "DUAL_WRITE_RECONCILE_MAX_INVALID_OUTBOX_PAYLOADS": "4",
+                "DUAL_WRITE_RECONCILE_MAX_OUTBOX_PAYLOAD_MISMATCHES": "5",
             }
         )
-        self.assertEqual(settings.phase2_reconcile_max_missing_jobs, 2)
-        self.assertEqual(settings.phase2_reconcile_max_job_field_mismatches, 3)
-        self.assertEqual(settings.phase2_reconcile_max_invalid_outbox_payloads, 4)
-        self.assertEqual(settings.phase2_reconcile_max_outbox_payload_mismatches, 5)
+        self.assertEqual(settings.dual_write_reconcile_max_missing_jobs, 2)
+        self.assertEqual(settings.dual_write_reconcile_max_job_field_mismatches, 3)
+        self.assertEqual(settings.dual_write_reconcile_max_invalid_outbox_payloads, 4)
+        self.assertEqual(settings.dual_write_reconcile_max_outbox_payload_mismatches, 5)
 
     def test_load_runtime_settings_rejects_negative_reconcile_threshold(self):
         with self.assertRaises(RuntimeError):
-            load_runtime_settings({"PHASE2_RECONCILE_MAX_MISSING_JOBS": "-1"})
+            load_runtime_settings({"DUAL_WRITE_RECONCILE_MAX_MISSING_JOBS": "-1"})
 
     def test_load_runtime_settings_reads_project_dotenv_when_environ_not_provided(self):
         with TemporaryDirectory() as temp_root:
@@ -98,7 +98,7 @@ class Phase0ConfigValidationTests(unittest.TestCase):
                     [
                         "JOB_REPOSITORY_BACKEND=sqlalchemy",
                         "DATABASE_URL=sqlite:///:memory:",
-                        "PHASE2_SHADOW_WRITE_ENABLED=true",
+                        "SHADOW_WRITE_ENABLED=true",
                     ]
                 )
                 + "\n",
@@ -110,7 +110,7 @@ class Phase0ConfigValidationTests(unittest.TestCase):
 
         self.assertEqual(settings.job_repository_backend, "sqlalchemy")
         self.assertEqual(settings.database_url, "sqlite:///:memory:")
-        self.assertTrue(settings.phase2_shadow_write_enabled)
+        self.assertTrue(settings.shadow_write_enabled)
 
     def test_load_runtime_settings_builds_database_url_from_postgres_parts(self):
         settings = load_runtime_settings(
@@ -136,7 +136,7 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             load_runtime_settings({"JOB_REPOSITORY_BACKEND": "redis"})
 
-    def test_load_runtime_settings_reads_phase8_vector_settings(self):
+    def test_load_runtime_settings_reads_vector_settings(self):
         settings = load_runtime_settings(
             {
                 "VECTOR_REPOSITORY_BACKEND": "qdrant",
@@ -163,26 +163,26 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             load_runtime_settings({"VECTOR_EMBEDDING_DIMENSION": "4"})
 
-    def test_load_runtime_settings_reads_phase9_cutover_controls(self):
+    def test_load_runtime_settings_reads_cutover_controls(self):
         settings = load_runtime_settings(
             {
-                "PHASE9_CUTOVER_READ_SOURCE": "postgres",
-                "PHASE9_SCHEMA_FREEZE_ENABLED": "true",
-                "PHASE9_ROLLBACK_ENABLED": "false",
-                "PHASE9_STABILITY_WINDOW_DAYS": "14",
-                "PHASE9_SHADOW_TRAFFIC_ENABLED": "yes",
+                "CUTOVER_READ_SOURCE": "postgres",
+                "SCHEMA_FREEZE_ENABLED": "true",
+                "ROLLBACK_ENABLED": "false",
+                "STABILITY_WINDOW_DAYS": "14",
+                "SHADOW_TRAFFIC_ENABLED": "yes",
             }
         )
 
-        self.assertEqual(settings.phase9_cutover_read_source, "postgres")
-        self.assertTrue(settings.phase9_schema_freeze_enabled)
-        self.assertFalse(settings.phase9_rollback_enabled)
-        self.assertEqual(settings.phase9_stability_window_days, 14)
-        self.assertTrue(settings.phase9_shadow_traffic_enabled)
+        self.assertEqual(settings.cutover_read_source, "postgres")
+        self.assertTrue(settings.schema_freeze_enabled)
+        self.assertFalse(settings.rollback_enabled)
+        self.assertEqual(settings.stability_window_days, 14)
+        self.assertTrue(settings.shadow_traffic_enabled)
 
-    def test_load_runtime_settings_rejects_invalid_phase9_read_source(self):
+    def test_load_runtime_settings_rejects_invalid_cutover_read_source(self):
         with self.assertRaises(RuntimeError):
-            load_runtime_settings({"PHASE9_CUTOVER_READ_SOURCE": "mysql"})
+            load_runtime_settings({"CUTOVER_READ_SOURCE": "mysql"})
 
     def test_create_job_repository_builds_in_memory_backend(self):
         repo = create_job_repository({})
@@ -224,77 +224,77 @@ class Phase0ConfigValidationTests(unittest.TestCase):
         session_factory = create_sqlalchemy_session_factory({"DATABASE_URL": "sqlite:///:memory:"})
         self.assertIsInstance(session_factory, SQLAlchemySessionFactory)
 
-    def test_create_phase2_shadow_write_service_requires_database_url(self):
+    def test_create_shadow_write_service_requires_database_url(self):
         with self.assertRaises(RuntimeError):
-            create_phase2_shadow_write_service({"PHASE2_SHADOW_WRITE_ENABLED": "true"})
+            create_shadow_write_service({"SHADOW_WRITE_ENABLED": "true"})
 
-    def test_create_phase2_shadow_write_service_builds_service(self):
-        service = create_phase2_shadow_write_service(
+    def test_create_shadow_write_service_builds_service(self):
+        service = create_shadow_write_service(
             {
-                "PHASE2_SHADOW_WRITE_ENABLED": "true",
+                "SHADOW_WRITE_ENABLED": "true",
                 "DATABASE_URL": "sqlite:///:memory:",
             }
         )
-        self.assertIsInstance(service, Phase2ShadowWriteService)
+        self.assertIsInstance(service, ShadowWriteService)
 
-    def test_create_phase2_reconcile_service_requires_database_url(self):
+    def test_create_dual_write_reconcile_service_requires_database_url(self):
         with self.assertRaises(RuntimeError):
-            create_phase2_reconcile_service(
+            create_dual_write_reconcile_service(
                 InMemoryJobRepository(),
-                {"PHASE2_RECONCILE_ENABLED": "true"},
+                {"DUAL_WRITE_RECONCILE_ENABLED": "true"},
             )
 
-    def test_create_phase2_reconcile_service_builds_service(self):
-        service = create_phase2_reconcile_service(
+    def test_create_dual_write_reconcile_service_builds_service(self):
+        service = create_dual_write_reconcile_service(
             InMemoryJobRepository(),
             {
-                "PHASE2_RECONCILE_ENABLED": "true",
+                "DUAL_WRITE_RECONCILE_ENABLED": "true",
                 "DATABASE_URL": "sqlite:///:memory:",
-                "PHASE2_RECONCILE_MAX_MISSING_JOBS": "1",
+                "DUAL_WRITE_RECONCILE_MAX_MISSING_JOBS": "1",
             },
         )
-        self.assertIsInstance(service, Phase2ReconcileService)
+        self.assertIsInstance(service, DualWriteReconcileService)
         self.assertEqual(service.thresholds.max_missing_jobs, 1)
 
-    def test_create_phase2_outbox_dispatcher_requires_database_url(self):
+    def test_create_outbox_dispatcher_requires_database_url(self):
         with self.assertRaises(RuntimeError):
-            create_phase2_outbox_dispatcher(
+            create_outbox_dispatcher(
                 publisher=object(),
-                environ={"PHASE2_OUTBOX_DISPATCH_ENABLED": "true"},
+                environ={"OUTBOX_DISPATCH_ENABLED": "true"},
             )
 
-    def test_create_phase2_outbox_dispatcher_returns_none_without_publisher(self):
-        dispatcher = create_phase2_outbox_dispatcher(
+    def test_create_outbox_dispatcher_returns_none_without_publisher(self):
+        dispatcher = create_outbox_dispatcher(
             environ={
-                "PHASE2_OUTBOX_DISPATCH_ENABLED": "true",
+                "OUTBOX_DISPATCH_ENABLED": "true",
                 "DATABASE_URL": "sqlite:///:memory:",
             },
         )
         self.assertIsNone(dispatcher)
 
-    def test_create_phase2_outbox_dispatcher_builds_dispatcher(self):
+    def test_create_outbox_dispatcher_builds_dispatcher(self):
         class Publisher:
             def publish(self, topic: str, payload: str, correlation_id=None) -> None:
                 return None
 
-        dispatcher = create_phase2_outbox_dispatcher(
+        dispatcher = create_outbox_dispatcher(
             publisher=Publisher(),
             environ={
-                "PHASE2_OUTBOX_DISPATCH_ENABLED": "true",
+                "OUTBOX_DISPATCH_ENABLED": "true",
                 "DATABASE_URL": "sqlite:///:memory:",
             },
         )
         self.assertIsInstance(dispatcher, OutboxDispatcher)
 
-    def test_create_phase2_outbox_dispatcher_builds_for_phase6_without_phase2_flag(self):
+    def test_create_outbox_dispatcher_builds_for_pipeline_without_shadow_write_flag(self):
         class Publisher:
             def publish(self, topic: str, payload: str, correlation_id=None) -> None:
                 return None
 
-        dispatcher = create_phase2_outbox_dispatcher(
+        dispatcher = create_outbox_dispatcher(
             publisher=Publisher(),
             environ={
-                "PHASE6_ASYNC_PIPELINE_ENABLED": "true",
+                "ASYNC_PIPELINE_ENABLED": "true",
                 "DATABASE_URL": "sqlite:///:memory:",
             },
         )

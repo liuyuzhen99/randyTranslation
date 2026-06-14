@@ -20,7 +20,7 @@ class QueueDepthCollector(Protocol):
         ...
 
 
-class Phase7ObservabilityService:
+class OperationalObservabilityService:
     def __init__(
         self,
         *,

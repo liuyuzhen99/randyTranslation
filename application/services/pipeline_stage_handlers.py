@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 
-from application.services.phase4_workflow_service import Phase4WorkflowServices, ReviewConflictError
+from application.services.review_workflow_service import ReviewWorkflowServices, ReviewConflictError
 from domain.entities import ArtifactRecord
 from domain.enums import CandidateStatus, ReviewStatus, ReviewType, StageType
 from domain.message_contracts import PipelineStageMessage
@@ -23,7 +23,7 @@ class PipelineStageHandlers:
         *,
         media_storage: MediaStorageService,
         producer_backend_factory: ProducerBackendFactory,
-        workflow_services: Phase4WorkflowServices | None = None,
+        workflow_services: ReviewWorkflowServices | None = None,
         artifact_repository: ArtifactRepository | None = None,
         vector_repository=None,
         final_artifact_retention_days: int = 0,
@@ -78,10 +78,10 @@ class PipelineStageHandlers:
             try:
                 self.workflow_services.automation_service.submit_transcript(
                     candidate_id=candidate_id,
-                    actor_id="phase6-transcriber",
+                    actor_id="pipeline-transcriber",
                     segments=normalized_segments,
                     auto_approve_review=True,
-                    comment="Phase 6 async transcription completed.",
+                    comment="MV pipeline transcription completed.",
                 )
             except ReviewConflictError:
                 pass
@@ -118,9 +118,9 @@ class PipelineStageHandlers:
             try:
                 self.workflow_services.automation_service.record_taste_audit(
                     candidate_id=candidate_id,
-                    actor_id="phase6-auditor",
+                    actor_id="pipeline-auditor",
                     approve=approve,
-                    comment=audit_result.get("reason") or "Phase 6 async taste audit completed.",
+                    comment=audit_result.get("reason") or "MV pipeline taste audit completed.",
                     score=float(score or 0),
                     key_lyrics=audit_result.get("key_lyrics") or english_texts[:3],
                 )
@@ -165,10 +165,10 @@ class PipelineStageHandlers:
             try:
                 self.workflow_services.automation_service.submit_translation(
                     candidate_id=candidate_id,
-                    actor_id="phase6-translator",
+                    actor_id="pipeline-translator",
                     translations=translations,
                     auto_approve_review=False,
-                    comment="Phase 6 async translation completed.",
+                    comment="MV pipeline translation completed.",
                 )
             except ReviewConflictError:
                 pass
@@ -273,7 +273,7 @@ class PipelineStageHandlers:
             stage_logger.info("未配置 RAG 向量库，AI 审计将不带相似品味参考。")
             return []
         try:
-            from application.services.phase8_vectors import AUDIT_STYLE_MEMORY
+            from application.services.vector_migration import AUDIT_STYLE_MEMORY
 
             query = "\n".join(english_texts[:20]) or message.song_name
             records = repository.search(AUDIT_STYLE_MEMORY, query, limit=3)
@@ -297,7 +297,7 @@ class PipelineStageHandlers:
             stage_logger.info("未配置 RAG 向量库，AI 翻译将不带相似翻译参考。")
             return []
         try:
-            from application.services.phase8_vectors import TRANSLATION_MEMORY
+            from application.services.vector_migration import TRANSLATION_MEMORY
 
             query = "\n".join(english_texts[:20]) or message.song_name
             records = repository.search(TRANSLATION_MEMORY, query, limit=3)

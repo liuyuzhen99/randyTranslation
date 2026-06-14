@@ -19,19 +19,25 @@ from infrastructure.persistence.sqlalchemy_repositories import (
 )
 
 
-RUN_INTEGRATION = os.environ.get("RUN_PHASE6_RABBITMQ_POSTGRES_INTEGRATION", "").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+RUN_INTEGRATION = (
+    os.environ.get(
+        "RUN_PIPELINE_RABBITMQ_POSTGRES_INTEGRATION",
+        os.environ.get("RUN_PHASE6_RABBITMQ_POSTGRES_INTEGRATION", ""),
+    ).lower()
+    in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+)
 
 
-class Phase6RabbitMQPostgresIntegrationTests(unittest.TestCase):
+class RabbitMQPostgresIntegrationTests(unittest.TestCase):
     def test_rabbitmq_postgres_worker_round_trip(self):
         if not RUN_INTEGRATION:
             self.skipTest(
-                "Set RUN_PHASE6_RABBITMQ_POSTGRES_INTEGRATION=true with DATABASE_URL and RABBITMQ_URL to run."
+                "Set RUN_PIPELINE_RABBITMQ_POSTGRES_INTEGRATION=true with DATABASE_URL and RABBITMQ_URL to run."
             )
         database_url = os.environ["DATABASE_URL"]
         rabbitmq_url = os.environ["RABBITMQ_URL"]
@@ -44,7 +50,7 @@ class Phase6RabbitMQPostgresIntegrationTests(unittest.TestCase):
         RabbitMQTopologyManager(
             RabbitMQTopologyConfig(url=rabbitmq_url, topology=topology)
         ).declare()
-        self._purge_phase6_queues(rabbitmq_url, topology)
+        self._purge_pipeline_queues(rabbitmq_url, topology)
 
         session_factory = SQLAlchemySessionFactory(database_url)
         session_factory.create_schema()
@@ -53,7 +59,7 @@ class Phase6RabbitMQPostgresIntegrationTests(unittest.TestCase):
         execution_repository = SQLAlchemyPipelineStageExecutionRepository(session_factory)
         command_service = AsyncPipelineCommandService(outbox_repository=outbox_repository)
 
-        job = Job(job_id=f"phase6-it-{uuid4().hex[:12]}", song_name="RabbitMQ Postgres IT")
+        job = Job(job_id=f"pipeline-it-{uuid4().hex[:12]}", song_name="RabbitMQ Postgres IT")
         job_repository.create(job)
         first_message = command_service.enqueue_first_stage(job)
         first_event = outbox_repository.get(f"pipeline.stage.command:{first_message.dedupe_key}")
@@ -93,7 +99,7 @@ class Phase6RabbitMQPostgresIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(next_event)
         self.assertEqual(PipelineStageMessage.from_payload(next_event.payload).stage, StageType.TRANSCRIBE)
 
-    def _purge_phase6_queues(self, rabbitmq_url: str, topology: PipelineQueueTopology) -> None:
+    def _purge_pipeline_queues(self, rabbitmq_url: str, topology: PipelineQueueTopology) -> None:
         import pika
 
         connection = pika.BlockingConnection(pika.URLParameters(rabbitmq_url))

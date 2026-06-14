@@ -36,7 +36,7 @@ class RabbitMQQueueMetricsCollector:
             import pika
         except ImportError as exc:
             raise RuntimeError(
-                "RabbitMQ queue metrics require pika. Install requirements before enabling Phase 7 observability."
+                "RabbitMQ queue metrics require pika. Install requirements before enabling operational observability."
             ) from exc
 
         return pika.BlockingConnection(pika.URLParameters(self.config.url))

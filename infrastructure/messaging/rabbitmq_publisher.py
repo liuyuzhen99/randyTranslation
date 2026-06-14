@@ -24,7 +24,7 @@ class RabbitMQPublisher:
             import pika
         except ImportError as exc:
             raise RuntimeError(
-                "RabbitMQ publishing requires pika. Install requirements before enabling Phase 6."
+                "RabbitMQ publishing requires pika. Install requirements before enabling RabbitMQ pipeline."
             ) from exc
 
         parameters = pika.URLParameters(self.config.url)

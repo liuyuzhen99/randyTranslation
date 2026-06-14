@@ -1,13 +1,13 @@
 import unittest
 from tempfile import TemporaryDirectory
 
-from scripts.phase8_retrieval_quality import _load_cases
-from application.services.phase8_vectors import (
+from scripts.vector_retrieval_quality import _load_cases
+from application.services.vector_migration import (
     AUDIT_STYLE_MEMORY,
     TRANSLATION_MEMORY,
     HashingEmbeddingProvider,
-    Phase8RetrievalQualityEvaluator,
-    Phase8VectorMigrationService,
+    RetrievalQualityEvaluator,
+    VectorMigrationService,
     RetrievalQualityCase,
     deterministic_vector_id,
 )
@@ -48,7 +48,7 @@ class InMemoryVectorRepository(VectorRepository):
         return [record for _, record in sorted(scored, key=lambda item: (-item[0], item[1].vector_id))[:limit]]
 
 
-class Phase8QdrantMigrationTests(unittest.TestCase):
+class QdrantVectorMigrationTests(unittest.TestCase):
     def test_deterministic_vector_id_uses_qdrant_uuid_shape(self):
         vector_id = deterministic_vector_id(TRANSLATION_MEMORY, "legacy-source-1")
 
@@ -105,7 +105,7 @@ class Phase8QdrantMigrationTests(unittest.TestCase):
                 metadata={"artist": "Test Artist"},
             )
         )
-        service = Phase8VectorMigrationService(
+        service = VectorMigrationService(
             source_repository=source,
             target_repository=target,
             embedding_provider=HashingEmbeddingProvider(dimension=32),
@@ -120,7 +120,7 @@ class Phase8QdrantMigrationTests(unittest.TestCase):
         self.assertEqual(first_report.upserted, 1)
         self.assertEqual(target.count_by_namespace(TRANSLATION_MEMORY), 1)
         self.assertIn(expected_id, target.records)
-        self.assertEqual(target.records[expected_id].metadata["phase8_source_namespace"], TRANSLATION_MEMORY)
+        self.assertEqual(target.records[expected_id].metadata["vector_source_namespace"], TRANSLATION_MEMORY)
 
     def test_retrieval_quality_evaluator_reports_missing_expected_ids(self):
         repository = InMemoryVectorRepository()
@@ -131,7 +131,7 @@ class Phase8QdrantMigrationTests(unittest.TestCase):
                 text="gritty bass high energy",
             )
         )
-        evaluator = Phase8RetrievalQualityEvaluator(repository)
+        evaluator = RetrievalQualityEvaluator(repository)
 
         report = evaluator.evaluate(
             [
@@ -158,7 +158,7 @@ class Phase8QdrantMigrationTests(unittest.TestCase):
         repository = QdrantVectorRepository(
             url="",
             client=client,
-            collection_prefix="phase8_test",
+            collection_prefix="vector_test",
             embedding_provider=HashingEmbeddingProvider(dimension=16),
         )
         source_id = deterministic_vector_id(TRANSLATION_MEMORY, "legacy-qdrant-1")
@@ -174,18 +174,18 @@ class Phase8QdrantMigrationTests(unittest.TestCase):
         results = repository.search(TRANSLATION_MEMORY, "cadence translation", limit=3)
         listed = repository.list_by_namespace(TRANSLATION_MEMORY)
 
-        self.assertEqual(client.created_collections["phase8_test_translation_memory"]["size"], 16)
+        self.assertEqual(client.created_collections["vector_test_translation_memory"]["size"], 16)
         self.assertEqual(repository.count_by_namespace(TRANSLATION_MEMORY), 1)
         self.assertEqual(results[0].vector_id, source_id)
         self.assertEqual(listed[0].metadata["artist"], "Contract")
 
     def test_qdrant_repository_rejects_existing_collection_dimension_mismatch(self):
         client = FakeQdrantClient()
-        client.created_collections["phase8_test_translation_memory"] = {"size": 384, "distance": "Cosine"}
+        client.created_collections["vector_test_translation_memory"] = {"size": 384, "distance": "Cosine"}
         repository = QdrantVectorRepository(
             url="",
             client=client,
-            collection_prefix="phase8_test",
+            collection_prefix="vector_test",
             embedding_provider=HashingEmbeddingProvider(dimension=1024),
         )
 
@@ -235,14 +235,26 @@ class FakeQdrantClient:
         }
 
     def create_collection(self, *, collection_name: str, vectors_config) -> None:
-        self.created_collections[collection_name] = vectors_config
+        if isinstance(vectors_config, dict):
+            self.created_collections[collection_name] = vectors_config
+        else:
+            self.created_collections[collection_name] = {
+                "size": vectors_config.size,
+                "distance": vectors_config.distance,
+            }
 
     def upsert(self, *, collection_name: str, points: list[dict]) -> None:
         self.points.setdefault(collection_name, [])
-        existing = {point["id"]: point for point in self.points[collection_name]}
+        existing = {self._point_id(point): point for point in self.points[collection_name]}
         for point in points:
-            existing[point["id"]] = point
+            existing[self._point_id(point)] = point
         self.points[collection_name] = list(existing.values())
+
+    @staticmethod
+    def _point_id(point) -> str:
+        if isinstance(point, dict):
+            return point["id"]
+        return point.id
 
     def count(self, *, collection_name: str, exact: bool = True):
         return {"count": len(self.points.get(collection_name, []))}

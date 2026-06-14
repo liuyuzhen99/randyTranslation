@@ -8,10 +8,10 @@ from urllib.request import Request, urlopen
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Phase 7 API smoke drill.")
+    parser = argparse.ArgumentParser(description="Run observability API smoke drill.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--require-ready", action="store_true")
-    parser.add_argument("--request-id", default="phase7-smoke-drill")
+    parser.add_argument("--request-id", default="observability-smoke-drill")
     return parser.parse_args()
 
 
@@ -20,8 +20,8 @@ def main() -> int:
     results = {
         "healthz": fetch(args.base_url, "/healthz", args.request_id),
         "readyz": fetch(args.base_url, "/readyz", args.request_id),
-        "observability": fetch(args.base_url, "/internal/phase7/observability", args.request_id),
-        "metrics": fetch(args.base_url, "/internal/phase7/metrics", args.request_id),
+        "observability": fetch(args.base_url, "/internal/observability/snapshot", args.request_id),
+        "metrics": fetch(args.base_url, "/internal/observability/metrics", args.request_id),
     }
     print(json.dumps(results, indent=2, sort_keys=True))
 

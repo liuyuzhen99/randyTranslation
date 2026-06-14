@@ -20,7 +20,7 @@ class CandidateDiscoveryPayload:
 
 
 @dataclass(frozen=True)
-class Phase3Providers:
+class ArtistCatalogProviders:
     followed_artists_lookup: Callable[[], list[Artist]]
     channel_lookup: Callable[[Artist], str | None]
     candidate_lookup: Callable[[Artist, int], list[CandidateDiscoveryPayload]]
@@ -196,7 +196,7 @@ class CandidateCatalogService:
         artist_repository: ArtistRepository,
         artist_sync_run_repository: ArtistSyncRunRepository,
         candidate_repository: CandidateRepository,
-        providers: Phase3Providers,
+        providers: ArtistCatalogProviders,
         artist_sync_stale_after_seconds: int = 1800,
     ) -> None:
         self.artist_repository = artist_repository

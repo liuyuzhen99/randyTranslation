@@ -10,14 +10,14 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import api.service as api_service
-from application.services.phase3_catalog_service import CandidateDiscoveryPayload, Phase3Providers
+from application.services.artist_catalog_service import CandidateDiscoveryPayload, ArtistCatalogProviders
 from application.services.async_pipeline import AsyncPipelineCommandService, PipelineStageWorker
 from application.services.pipeline_stage_handlers import PipelineStageHandlers
-from application.services.phase8_vectors import TRANSLATION_MEMORY
-from application.services.phase7_health import Phase7HealthService
-from application.services.phase7_metrics import render_prometheus_metrics
-from application.services.phase7_observability import Phase7ObservabilityService
-from application.services.retry_scheduler import Phase6RetryScheduler
+from application.services.vector_migration import TRANSLATION_MEMORY
+from application.services.operational_health import OperationalHealthService
+from application.services.operational_metrics import render_prometheus_metrics
+from application.services.operational_observability import OperationalObservabilityService
+from application.services.retry_scheduler import PipelineRetryScheduler
 from domain.entities import Job, PipelineStageExecution, VectorRecord
 from domain.enums import JobStatus, OutboxStatus, StageStatus, StageType
 from domain.message_contracts import PipelineStageMessage, ReviewContext
@@ -115,15 +115,15 @@ class FakeVectorRepository:
         ]
 
 
-class Phase6AsyncPipelineTests(unittest.TestCase):
+class AsyncPipelineTests(unittest.TestCase):
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
     def _session_factory(self, temp_root: str) -> SQLAlchemySessionFactory:
-        session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'phase6.db')}")
+        session_factory = SQLAlchemySessionFactory(f"sqlite:///{os.path.join(temp_root, 'pipeline.db')}")
         session_factory.create_schema()
         return session_factory
 
-    def test_phase6_topology_matches_roadmap_stage_queues(self):
+    def test_pipeline_topology_matches_roadmap_stage_queues(self):
         topology = PipelineQueueTopology()
 
         self.assertEqual(topology.command_queue, "pipeline.command")
@@ -135,10 +135,10 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
         self.assertEqual(next_stage(StageType.DOWNLOAD), StageType.TRANSCRIBE)
         self.assertEqual(next_stage(StageType.RENDER), None)
 
-    def test_phase6_stage_message_round_trips_review_and_retry_context(self):
+    def test_pipeline_stage_message_round_trips_review_and_retry_context(self):
         message = PipelineStageMessage.build(
             message_type="pipeline.stage.command",
-            job_id="job-phase6-1",
+            job_id="job-pipeline-1",
             stage=StageType.MANUAL_REVIEW,
             song_name="Sunday Again",
             trace_id="trace-1",
@@ -157,7 +157,7 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
         parsed = PipelineStageMessage.from_payload(message.to_payload())
 
         self.assertEqual(parsed.schema_version, "v1")
-        self.assertEqual(parsed.job_id, "job-phase6-1")
+        self.assertEqual(parsed.job_id, "job-pipeline-1")
         self.assertEqual(parsed.stage, StageType.MANUAL_REVIEW)
         self.assertEqual(parsed.retry.attempt, 2)
         self.assertEqual(parsed.retry.max_attempts, 5)
@@ -165,12 +165,12 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
         self.assertEqual(parsed.review.review_id, "review-1")
         self.assertEqual(parsed.payload, {"source": "test"})
 
-    def test_phase6_command_service_uses_outbox_as_only_publish_path(self):
+    def test_pipeline_command_service_uses_outbox_as_only_publish_path(self):
         with TemporaryDirectory() as temp_root:
             session_factory = self._session_factory(temp_root)
             job_repository = SQLAlchemyJobRepository(session_factory)
             outbox_repository = SQLAlchemyOutboxRepository(session_factory)
-            job = Job(job_id="job-phase6-2", song_name="Async Song")
+            job = Job(job_id="job-pipeline-2", song_name="Async Song")
             job_repository.create(job)
 
             command_service = AsyncPipelineCommandService(
@@ -190,13 +190,13 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             self.assertEqual(parsed.review.candidate_id, "candidate-2")
             self.assertEqual(parsed.retry.max_attempts, 4)
 
-    def test_phase6_worker_replay_does_not_repeat_side_effects(self):
+    def test_pipeline_worker_replay_does_not_repeat_side_effects(self):
         with TemporaryDirectory() as temp_root:
             session_factory = self._session_factory(temp_root)
             job_repository = SQLAlchemyJobRepository(session_factory)
             outbox_repository = SQLAlchemyOutboxRepository(session_factory)
             execution_repository = SQLAlchemyPipelineStageExecutionRepository(session_factory)
-            job_repository.create(Job(job_id="job-phase6-3", song_name="Replay Song"))
+            job_repository.create(Job(job_id="job-pipeline-3", song_name="Replay Song"))
             command_service = AsyncPipelineCommandService(outbox_repository=outbox_repository)
             calls = []
             worker = PipelineStageWorker(
@@ -207,7 +207,7 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             )
             message = PipelineStageMessage.build(
                 message_type="pipeline.stage.command",
-                job_id="job-phase6-3",
+                job_id="job-pipeline-3",
                 stage=StageType.DOWNLOAD,
                 song_name="Replay Song",
             )
@@ -228,13 +228,13 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
                 [StageType.TRANSCRIBE],
             )
 
-    def test_phase6_worker_retries_then_routes_to_dlq(self):
+    def test_pipeline_worker_retries_then_routes_to_dlq(self):
         with TemporaryDirectory() as temp_root:
             session_factory = self._session_factory(temp_root)
             job_repository = SQLAlchemyJobRepository(session_factory)
             outbox_repository = SQLAlchemyOutboxRepository(session_factory)
             execution_repository = SQLAlchemyPipelineStageExecutionRepository(session_factory)
-            job_repository.create(Job(job_id="job-phase6-4", song_name="Failing Song"))
+            job_repository.create(Job(job_id="job-pipeline-4", song_name="Failing Song"))
             command_service = AsyncPipelineCommandService(outbox_repository=outbox_repository)
 
             def fail(_message):
@@ -249,7 +249,7 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             )
             first_message = PipelineStageMessage.build(
                 message_type="pipeline.stage.command",
-                job_id="job-phase6-4",
+                job_id="job-pipeline-4",
                 stage=StageType.AUDIT,
                 song_name="Failing Song",
                 max_attempts=2,
@@ -264,7 +264,7 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             execution_repository.upsert(
                 replace(execution, next_retry_at=utc_now() - timedelta(seconds=1))
             )
-            schedule_result = Phase6RetryScheduler(
+            schedule_result = PipelineRetryScheduler(
                 execution_repository=execution_repository,
                 command_service=command_service,
             ).schedule_due()
@@ -280,7 +280,7 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             self.assertEqual(replay_result.action, "ack_retry_scheduled")
             self.assertEqual(schedule_result["scheduled"], 1)
             self.assertEqual(dlq_result.action, "dlq")
-            self.assertEqual(job_repository.get("job-phase6-4").status, JobStatus.FAILED)
+            self.assertEqual(job_repository.get("job-pipeline-4").status, JobStatus.FAILED)
             self.assertIn(
                 "pipeline.dlq",
                 {event.topic for event in outbox_repository.list_pending()},
@@ -319,20 +319,21 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
         self.assertEqual(backend.translation_references[0]["translation"], "城市里的梦想与压力")
         self.assertEqual(result["translation_references"], backend.translation_references)
 
-    def test_phase6_create_task_writes_command_outbox_instead_of_running_background(self):
+    def test_pipeline_create_task_writes_command_outbox_instead_of_running_background(self):
         with TemporaryDirectory() as temp_root:
             env = {
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_BASE_URL": "https://example.local",
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase6-api.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
-                "PHASE2_SHADOW_WRITE_ENABLED": "false",
-                "PHASE6_ASYNC_PIPELINE_ENABLED": "true",
-                "PHASE6_SERVICE_WORKER_ENABLED": "false",
-                "PHASE6_MAX_STAGE_ATTEMPTS": "4",
-                "PHASE2_OUTBOX_DISPATCH_ENABLED": "false",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'pipeline-api.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "SHADOW_WRITE_ENABLED": "false",
+                "ASYNC_PIPELINE_ENABLED": "true",
+                "PIPELINE_SERVICE_WORKER_ENABLED": "false",
+                "PIPELINE_MAX_STAGE_ATTEMPTS": "4",
+                "OUTBOX_DISPATCH_ENABLED": "false",
                 "RABBITMQ_URL": "",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
             }
             with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app()
@@ -340,13 +341,13 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
                     response = client.post(
                         "/create_task",
                         json={"song_name": "Async API Song", "candidate_id": "candidate-api-1"},
-                        headers={"X-Correlation-Id": "trace-phase7-contract"},
+                        headers={"X-Correlation-Id": "trace-operational-contract"},
                     )
 
             self.assertEqual(response.status_code, 200)
             self.assertIn("异步 pipeline", response.json()["message"])
             self.assertEqual(response.headers["Deprecation"], "true")
-            self.assertEqual(response.headers["X-Correlation-Id"], "trace-phase7-contract")
+            self.assertEqual(response.headers["X-Correlation-Id"], "trace-operational-contract")
             outbox_repository = SQLAlchemyOutboxRepository(app.state.session_factory)
             pending = [
                 event
@@ -358,33 +359,34 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             self.assertEqual(message.stage, StageType.DOWNLOAD)
             self.assertEqual(message.retry.max_attempts, 4)
             self.assertEqual(message.review.candidate_id, "candidate-api-1")
-            self.assertEqual(message.trace_id, "trace-phase7-contract")
-            self.assertEqual(pending[0].correlation_id, "trace-phase7-contract")
+            self.assertEqual(message.trace_id, "trace-operational-contract")
+            self.assertEqual(pending[0].correlation_id, "trace-operational-contract")
 
-    def test_add_candidate_to_pipeline_queues_phase6_transcript_work(self):
+    def test_add_candidate_to_pipeline_queues_transcript_work(self):
         with TemporaryDirectory() as temp_root:
             env = {
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_BASE_URL": "https://example.local",
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase6-add-candidate.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
-                "PHASE6_ASYNC_PIPELINE_ENABLED": "true",
-                "PHASE6_SERVICE_WORKER_ENABLED": "false",
-                "PHASE6_MAX_STAGE_ATTEMPTS": "4",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'pipeline-add-candidate.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "ASYNC_PIPELINE_ENABLED": "true",
+                "PIPELINE_SERVICE_WORKER_ENABLED": "false",
+                "PIPELINE_MAX_STAGE_ATTEMPTS": "4",
                 "MEDIA_TEMP_ROOT": os.path.join(temp_root, "temp"),
                 "MEDIA_OUTPUT_ROOT": os.path.join(temp_root, "output"),
-                "PHASE2_OUTBOX_DISPATCH_ENABLED": "false",
+                "OUTBOX_DISPATCH_ENABLED": "false",
                 "RABBITMQ_URL": "",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
             }
-            providers = Phase3Providers(
+            providers = ArtistCatalogProviders(
                 followed_artists_lookup=lambda: [],
-                channel_lookup=lambda artist: artist.yt_channel_id or "UC_PHASE6_ADD",
+                channel_lookup=lambda artist: artist.yt_channel_id or "UC_PIPELINE_ADD",
                 candidate_lookup=lambda artist, days: [
                     CandidateDiscoveryPayload(
-                        video_id="video-phase6-add",
-                        title="Phase 6 Add Candidate Video",
-                        source_url="https://youtube.test/watch?v=phase6-add",
+                        video_id="video-pipeline-add",
+                        title="Pipeline Add Candidate Video",
+                        source_url="https://youtube.test/watch?v=pipeline-add",
                     )
                 ],
             )
@@ -392,15 +394,15 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
                 "api.service.create_default_producer_backend",
                 FakeProducerBackend,
             ):
-                app = api_service.create_app(phase3_providers=providers)
+                app = api_service.create_app(artist_catalog_providers=providers)
                 from domain.entities import Artist
 
-                app.state.phase3_catalog_service.artist_repository.upsert(
-                    Artist(spotify_id="artist-phase6-add", name="Phase Six Add")
+                app.state.artist_catalog_service.artist_repository.upsert(
+                    Artist(spotify_id="artist-pipeline-add", name="Pipeline Add")
                 )
-                app.state.phase3_catalog_service.resync_artist("artist-phase6-add", trigger="manual")
-                candidate_id = app.state.phase3_catalog_service.candidate_repository.list_for_artist(
-                    "artist-phase6-add"
+                app.state.artist_catalog_service.resync_artist("artist-pipeline-add", trigger="manual")
+                candidate_id = app.state.artist_catalog_service.candidate_repository.list_for_artist(
+                    "artist-pipeline-add"
                 )[0].candidate_id
 
                 with TestClient(app) as client:
@@ -443,22 +445,22 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_BASE_URL": "https://example.local",
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase6-dispatch-candidate.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
-                "PHASE6_ASYNC_PIPELINE_ENABLED": "true",
-                "PHASE6_SERVICE_WORKER_ENABLED": "false",
-                "PHASE6_MAX_STAGE_ATTEMPTS": "4",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'pipeline-dispatch-candidate.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "ASYNC_PIPELINE_ENABLED": "true",
+                "PIPELINE_SERVICE_WORKER_ENABLED": "false",
+                "PIPELINE_MAX_STAGE_ATTEMPTS": "4",
                 "MEDIA_TEMP_ROOT": os.path.join(temp_root, "temp"),
                 "MEDIA_OUTPUT_ROOT": os.path.join(temp_root, "output"),
             }
-            providers = Phase3Providers(
+            providers = ArtistCatalogProviders(
                 followed_artists_lookup=lambda: [],
-                channel_lookup=lambda artist: artist.yt_channel_id or "UC_PHASE6_DISPATCH",
+                channel_lookup=lambda artist: artist.yt_channel_id or "UC_PIPELINE_DISPATCH",
                 candidate_lookup=lambda artist, days: [
                     CandidateDiscoveryPayload(
-                        video_id="video-phase6-dispatch",
-                        title="Phase 6 Dispatch Candidate Video",
-                        source_url="https://youtube.test/watch?v=phase6-dispatch",
+                        video_id="video-pipeline-dispatch",
+                        title="Pipeline Dispatch Candidate Video",
+                        source_url="https://youtube.test/watch?v=pipeline-dispatch",
                     )
                 ],
             )
@@ -469,16 +471,16 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             ):
                 app = api_service.create_app(
                     outbox_publisher=publisher,
-                    phase3_providers=providers,
+                    artist_catalog_providers=providers,
                 )
                 from domain.entities import Artist
 
-                app.state.phase3_catalog_service.artist_repository.upsert(
-                    Artist(spotify_id="artist-phase6-dispatch", name="Phase Six Dispatch")
+                app.state.artist_catalog_service.artist_repository.upsert(
+                    Artist(spotify_id="artist-pipeline-dispatch", name="Pipeline Dispatch")
                 )
-                app.state.phase3_catalog_service.resync_artist("artist-phase6-dispatch", trigger="manual")
-                candidate_id = app.state.phase3_catalog_service.candidate_repository.list_for_artist(
-                    "artist-phase6-dispatch"
+                app.state.artist_catalog_service.resync_artist("artist-pipeline-dispatch", trigger="manual")
+                candidate_id = app.state.artist_catalog_service.candidate_repository.list_for_artist(
+                    "artist-pipeline-dispatch"
                 )[0].candidate_id
 
                 with TestClient(app) as client:
@@ -515,24 +517,25 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_BASE_URL": "https://example.local",
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase6-inline-worker.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
-                "PHASE6_ASYNC_PIPELINE_ENABLED": "true",
-                "PHASE6_SERVICE_WORKER_ENABLED": "true",
-                "PHASE6_SERVICE_WORKER_POLL_SECONDS": "0.01",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'pipeline-inline-worker.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "ASYNC_PIPELINE_ENABLED": "true",
+                "PIPELINE_SERVICE_WORKER_ENABLED": "true",
+                "PIPELINE_SERVICE_WORKER_POLL_SECONDS": "0.01",
                 "MEDIA_TEMP_ROOT": os.path.join(temp_root, "temp"),
                 "MEDIA_OUTPUT_ROOT": os.path.join(temp_root, "output"),
-                "PHASE2_OUTBOX_DISPATCH_ENABLED": "false",
+                "OUTBOX_DISPATCH_ENABLED": "false",
                 "RABBITMQ_URL": "",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
             }
-            providers = Phase3Providers(
+            providers = ArtistCatalogProviders(
                 followed_artists_lookup=lambda: [],
-                channel_lookup=lambda artist: artist.yt_channel_id or "UC_PHASE6_INLINE",
+                channel_lookup=lambda artist: artist.yt_channel_id or "UC_PIPELINE_INLINE",
                 candidate_lookup=lambda artist, days: [
                     CandidateDiscoveryPayload(
-                        video_id="video-phase6-inline",
-                        title="Phase 6 Inline Candidate Video",
-                        source_url="https://youtube.test/watch?v=phase6-inline",
+                        video_id="video-pipeline-inline",
+                        title="Pipeline Inline Candidate Video",
+                        source_url="https://youtube.test/watch?v=pipeline-inline",
                     )
                 ],
             )
@@ -540,15 +543,15 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
                 "api.service.create_default_producer_backend",
                 FakeProducerBackend,
             ):
-                app = api_service.create_app(phase3_providers=providers)
+                app = api_service.create_app(artist_catalog_providers=providers)
                 from domain.entities import Artist
 
-                app.state.phase3_catalog_service.artist_repository.upsert(
-                    Artist(spotify_id="artist-phase6-inline", name="Phase Six Inline")
+                app.state.artist_catalog_service.artist_repository.upsert(
+                    Artist(spotify_id="artist-pipeline-inline", name="Pipeline Inline")
                 )
-                app.state.phase3_catalog_service.resync_artist("artist-phase6-inline", trigger="manual")
-                candidate_id = app.state.phase3_catalog_service.candidate_repository.list_for_artist(
-                    "artist-phase6-inline"
+                app.state.artist_catalog_service.resync_artist("artist-pipeline-inline", trigger="manual")
+                candidate_id = app.state.artist_catalog_service.candidate_repository.list_for_artist(
+                    "artist-pipeline-inline"
                 )[0].candidate_id
 
                 with TestClient(app) as client:
@@ -562,22 +565,23 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
                     self.assertEqual(pipeline_item["async_execution"]["current_stage"], "manual_review")
                     self.assertEqual(pipeline_item["async_execution"]["pause_reason"], "manual_review_pending")
 
-    def test_phase7_health_readiness_reports_dependency_statuses(self):
+    def test_operational_health_readiness_reports_dependency_statuses(self):
         with TemporaryDirectory() as temp_root:
             env = {
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_BASE_URL": "https://example.local",
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase7-health.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
-                "PHASE2_SHADOW_WRITE_ENABLED": "false",
-                "PHASE2_RECONCILE_ENABLED": "false",
-                "PHASE2_OUTBOX_DISPATCH_ENABLED": "false",
-                "PHASE6_ASYNC_PIPELINE_ENABLED": "false",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'operational-health.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "SHADOW_WRITE_ENABLED": "false",
+                "DUAL_WRITE_RECONCILE_ENABLED": "false",
+                "OUTBOX_DISPATCH_ENABLED": "false",
+                "ASYNC_PIPELINE_ENABLED": "false",
                 "MEDIA_STORAGE_BACKEND": "local",
                 "MEDIA_TEMP_ROOT": os.path.join(temp_root, "temp"),
                 "MEDIA_OUTPUT_ROOT": os.path.join(temp_root, "output"),
                 "RABBITMQ_URL": "",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
                 "QDRANT_URL": "",
             }
             with patch.dict(os.environ, env, clear=False):
@@ -595,18 +599,18 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             self.assertEqual(payload["checks"]["oss"]["status"], "ok")
             self.assertEqual(payload["checks"]["rabbitmq"]["status"], "skipped")
 
-    def test_phase7_health_service_reports_dependency_failures(self):
+    def test_operational_health_service_reports_dependency_failures(self):
         class QueueProbe:
             def collect_depths(self):
                 raise RuntimeError("rabbitmq unavailable")
 
         class BrokenLocalStorage:
             storage_provider = "local-oss"
-            temp_root = "/not-allowed/phase7-temp"
-            output_root = "/not-allowed/phase7-output"
+            temp_root = "/not-allowed/operational-temp"
+            output_root = "/not-allowed/operational-output"
             bucket = "test"
 
-        result = Phase7HealthService(
+        result = OperationalHealthService(
             session_factory=None,
             media_storage=BrokenLocalStorage(),
             queue_probe=QueueProbe(),
@@ -617,16 +621,16 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
         self.assertEqual(result.checks["rabbitmq"]["status"], "failed")
         self.assertEqual(result.checks["oss"]["status"], "failed")
 
-    def test_phase7_legacy_status_and_list_endpoints_publish_deprecation_headers(self):
+    def test_legacy_status_and_list_endpoints_publish_deprecation_headers(self):
         env = {
             "DEEPSEEK_API_KEY": "test-key",
             "DEEPSEEK_BASE_URL": "https://example.local",
             "JOB_REPOSITORY_BACKEND": "memory",
             "DATABASE_URL": "",
-            "PHASE2_SHADOW_WRITE_ENABLED": "false",
-                "PHASE2_RECONCILE_ENABLED": "false",
-                "PHASE2_OUTBOX_DISPATCH_ENABLED": "false",
-                "PHASE6_ASYNC_PIPELINE_ENABLED": "false",
+            "SHADOW_WRITE_ENABLED": "false",
+                "DUAL_WRITE_RECONCILE_ENABLED": "false",
+                "OUTBOX_DISPATCH_ENABLED": "false",
+                "ASYNC_PIPELINE_ENABLED": "false",
                 "MEDIA_STORAGE_BACKEND": "local",
             }
         with patch.dict(os.environ, env, clear=False):
@@ -634,7 +638,7 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             job = app.state.job_service.create_job("Legacy Song")
             with TestClient(app) as client:
                 status_response = client.get(f"/check_status/{job.job_id}")
-                not_found_response = client.get("/check_status/missing-phase7")
+                not_found_response = client.get("/check_status/missing-operational")
                 list_response = client.get("/list_tasks")
 
         self.assertEqual(status_response.status_code, 200)
@@ -645,29 +649,30 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
         self.assertEqual(list_response.status_code, 200)
         self.assertEqual(list_response.headers["Sunset"], api_service.LEGACY_SUNSET_HTTP_DATE)
 
-    def test_phase6_candidate_render_pauses_and_resumes_review_gates(self):
+    def test_pipeline_candidate_render_pauses_and_resumes_review_gates(self):
         with TemporaryDirectory() as temp_root:
             env = {
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_BASE_URL": "https://example.local",
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase6-gates.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
-                "PHASE6_ASYNC_PIPELINE_ENABLED": "true",
-                "PHASE6_SERVICE_WORKER_ENABLED": "false",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'pipeline-gates.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "ASYNC_PIPELINE_ENABLED": "true",
+                "PIPELINE_SERVICE_WORKER_ENABLED": "false",
                 "MEDIA_TEMP_ROOT": os.path.join(temp_root, "temp"),
                 "MEDIA_OUTPUT_ROOT": os.path.join(temp_root, "output"),
-                "PHASE2_OUTBOX_DISPATCH_ENABLED": "false",
+                "OUTBOX_DISPATCH_ENABLED": "false",
                 "RABBITMQ_URL": "",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
             }
-            providers = Phase3Providers(
+            providers = ArtistCatalogProviders(
                 followed_artists_lookup=lambda: [],
-                channel_lookup=lambda artist: artist.yt_channel_id or "UC_PHASE6",
+                channel_lookup=lambda artist: artist.yt_channel_id or "UC_PIPELINE",
                 candidate_lookup=lambda artist, days: [
                     CandidateDiscoveryPayload(
-                        video_id="video-phase6-gate",
-                        title="Phase 6 Gate Video",
-                        source_url="https://youtube.test/watch?v=phase6",
+                        video_id="video-pipeline-gate",
+                        title="Pipeline Gate Video",
+                        source_url="https://youtube.test/watch?v=pipeline",
                     )
                 ],
             )
@@ -675,23 +680,27 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
                 "api.service.create_default_producer_backend",
                 FakeProducerBackend,
             ):
-                app = api_service.create_app(phase3_providers=providers)
+                app = api_service.create_app(artist_catalog_providers=providers)
                 from domain.entities import Artist
 
-                app.state.phase3_catalog_service.artist_repository.upsert(
-                    Artist(spotify_id="artist-phase6", name="Phase Six")
+                app.state.artist_catalog_service.artist_repository.upsert(
+                    Artist(spotify_id="artist-pipeline", name="Pipeline")
                 )
-                app.state.phase3_catalog_service.resync_artist("artist-phase6", trigger="manual")
-                candidate_id = app.state.phase3_catalog_service.candidate_repository.list_for_artist(
-                    "artist-phase6"
+                app.state.artist_catalog_service.resync_artist("artist-pipeline", trigger="manual")
+                candidate_id = app.state.artist_catalog_service.candidate_repository.list_for_artist(
+                    "artist-pipeline"
                 )[0].candidate_id
+                app.state.review_workflow_services.pipeline_service.add_candidate(
+                    candidate_id,
+                    actor_id="test",
+                )
 
                 with TestClient(app) as client:
                     render_response = client.post(f"/v1/candidates/{candidate_id}/render")
                     self.assertEqual(render_response.status_code, 200)
 
                     outbox_repository = SQLAlchemyOutboxRepository(app.state.session_factory)
-                    _command_service, worker = app.state.phase6_async_pipeline_services
+                    _command_service, worker = app.state.async_pipeline_services
 
                     for expected_stage in (
                         StageType.DOWNLOAD,
@@ -771,7 +780,7 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             time.sleep(0.05)
         raise AssertionError(f"Timed out waiting for stage {stage.value}")
 
-    def test_phase6_rabbitmq_topology_declares_stage_queues_with_dlq(self):
+    def test_pipeline_rabbitmq_topology_declares_stage_queues_with_dlq(self):
         class Channel:
             def __init__(self):
                 self.exchanges = []
@@ -813,7 +822,7 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             channel.bindings,
         )
 
-    def test_phase6_rabbitmq_consumer_acks_and_drains_worker_outbox(self):
+    def test_pipeline_rabbitmq_consumer_acks_and_drains_worker_outbox(self):
         class Method:
             delivery_tag = "delivery-1"
 
@@ -875,7 +884,7 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
         self.assertEqual(channel.nacks, [])
         self.assertTrue(channel.stopped)
 
-    def test_phase6_rabbitmq_consumer_nacks_unpersisted_failures_without_requeue(self):
+    def test_pipeline_rabbitmq_consumer_nacks_unpersisted_failures_without_requeue(self):
         class Method:
             delivery_tag = "delivery-2"
 
@@ -914,7 +923,7 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
         self.assertEqual(channel.nacks, [("delivery-2", False)])
         self.assertTrue(channel.stopped)
 
-    def test_phase7_observability_reports_queue_depth_stage_latency_and_dlq(self):
+    def test_operational_observability_reports_queue_depth_stage_latency_and_dlq(self):
         class QueueCollector:
             def collect_depths(self):
                 return {
@@ -927,13 +936,13 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             session_factory = self._session_factory(temp_root)
             job_repository = SQLAlchemyJobRepository(session_factory)
             execution_repository = SQLAlchemyPipelineStageExecutionRepository(session_factory)
-            job_repository.create(Job(job_id="job-phase7-1", song_name="Observed Song"))
+            job_repository.create(Job(job_id="job-operational-1", song_name="Observed Song"))
             now = utc_now()
             execution_repository.upsert(
                 PipelineStageExecution(
                     execution_id="stage:observed-1",
                     dedupe_key="observed-1",
-                    job_id="job-phase7-1",
+                    job_id="job-operational-1",
                     stage=StageType.DOWNLOAD,
                     status=StageStatus.COMPLETED,
                     locked_at=now - timedelta(seconds=8),
@@ -946,7 +955,7 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
                 PipelineStageExecution(
                     execution_id="stage:observed-2",
                     dedupe_key="observed-2",
-                    job_id="job-phase7-1",
+                    job_id="job-operational-1",
                     stage=StageType.TRANSCRIBE,
                     status=StageStatus.DLQ,
                     created_at=now,
@@ -954,7 +963,7 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
                 )
             )
 
-            snapshot = Phase7ObservabilityService(
+            snapshot = OperationalObservabilityService(
                 session_factory=session_factory,
                 queue_depth_collector=QueueCollector(),
             ).snapshot()
@@ -975,27 +984,28 @@ class Phase6AsyncPipelineTests(unittest.TestCase):
             self.assertIn("randy_translation_dlq_count 3", metrics)
             self.assertIn('randy_translation_stage_status_count{stage="transcribe",status="dlq"} 1', metrics)
 
-    def test_phase7_metrics_endpoint_returns_prometheus_text(self):
+    def test_operational_metrics_endpoint_returns_prometheus_text(self):
         with TemporaryDirectory() as temp_root:
             env = {
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_BASE_URL": "https://example.local",
                 "JOB_REPOSITORY_BACKEND": "sqlalchemy",
-                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'phase7-metrics.db')}",
-                "PHASE2_AUTO_CREATE_SCHEMA": "true",
-                "PHASE2_SHADOW_WRITE_ENABLED": "false",
-                "PHASE2_RECONCILE_ENABLED": "false",
-                "PHASE2_OUTBOX_DISPATCH_ENABLED": "false",
-                "PHASE6_ASYNC_PIPELINE_ENABLED": "false",
+                "DATABASE_URL": f"sqlite:///{os.path.join(temp_root, 'operational-metrics.db')}",
+                "DATABASE_AUTO_CREATE_SCHEMA": "true",
+                "SHADOW_WRITE_ENABLED": "false",
+                "DUAL_WRITE_RECONCILE_ENABLED": "false",
+                "OUTBOX_DISPATCH_ENABLED": "false",
+                "ASYNC_PIPELINE_ENABLED": "false",
                 "MEDIA_STORAGE_BACKEND": "local",
                 "MEDIA_TEMP_ROOT": os.path.join(temp_root, "temp"),
                 "MEDIA_OUTPUT_ROOT": os.path.join(temp_root, "output"),
                 "RABBITMQ_URL": "",
+                "VECTOR_REPOSITORY_BACKEND": "sqlite",
             }
             with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app()
                 with TestClient(app) as client:
-                    response = client.get("/internal/phase7/metrics")
+                    response = client.get("/internal/observability/metrics")
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/plain", response.headers["content-type"])

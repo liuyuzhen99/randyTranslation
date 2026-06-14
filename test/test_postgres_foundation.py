@@ -17,11 +17,11 @@ from domain.message_contracts import JobLifecycleMessage
 from domain.time_utils import utc_now
 from application.services.job_service import JobService
 from application.services.outbox_dispatcher import OutboxDispatcher
-from application.services.phase2_reconcile_service import (
-    Phase2ReconcileService,
-    Phase2ReconcileThresholds,
+from application.services.dual_write_reconcile_service import (
+    DualWriteReconcileService,
+    DualWriteReconcileThresholds,
 )
-from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
+from application.services.shadow_write_service import ShadowWriteService
 from infrastructure.persistence.sqlalchemy_models import Base
 from infrastructure.persistence.sqlalchemy_models import JobEventModel
 from infrastructure.persistence.sqlalchemy_repositories import (
@@ -36,7 +36,7 @@ from infrastructure.persistence.sqlalchemy_repositories import (
 from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
 
 
-class Phase2PostgresFoundationTests(unittest.TestCase):
+class PostgresFoundationTests(unittest.TestCase):
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
     def test_job_lifecycle_message_round_trip_and_compare(self):
@@ -68,7 +68,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
         self.assertEqual(retried_job.retry_count, 2)
         self.assertEqual(retried_job.current_stage, StageType.DOWNLOAD)
 
-    def test_sqlalchemy_metadata_exposes_phase2_core_tables_and_indexes(self):
+    def test_sqlalchemy_metadata_exposes_core_tables_and_indexes(self):
         engine = create_engine("sqlite:///:memory:", future=True)
         Base.metadata.create_all(engine)
         inspector = inspect(engine)
@@ -97,7 +97,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
     def test_sqlalchemy_job_repository_enforces_transition_rules(self):
         with tempfile.TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
             repository = SQLAlchemyJobRepository(session_factory)
             job = Job(job_id="job2", song_name="song")
@@ -115,7 +115,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
     def test_sqlalchemy_repositories_round_trip_core_entities(self):
         with tempfile.TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
             artist_repository = SQLAlchemyArtistRepository(session_factory)
             video_repository = SQLAlchemyVideoRepository(session_factory)
@@ -179,7 +179,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
     def test_sqlalchemy_outbox_dedupe_key_is_unique(self):
         with tempfile.TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
             repository = SQLAlchemyOutboxRepository(session_factory)
             event = OutboxEvent(
@@ -206,9 +206,9 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
     def test_shadow_write_service_records_job_creation_transactionally(self):
         with tempfile.TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
-            service = Phase2ShadowWriteService(session_factory)
+            service = ShadowWriteService(session_factory)
             job = Job(job_id="job-shadow-1", song_name="song")
 
             service.record_job_created(job)
@@ -219,14 +219,14 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
     def test_reconcile_service_reports_consistent_shadow_write_state(self):
         with tempfile.TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
             primary_repository = SQLAlchemyJobRepository(session_factory)
-            shadow_service = Phase2ShadowWriteService(session_factory)
+            shadow_service = ShadowWriteService(session_factory)
             job_service = JobService(primary_repository, shadow_write_service=shadow_service)
             job = job_service.create_job("song")
 
-            report = Phase2ReconcileService(primary_repository, session_factory).generate_report()
+            report = DualWriteReconcileService(primary_repository, session_factory).generate_report()
 
             self.assertTrue(report.is_consistent)
             self.assertTrue(report.is_within_threshold)
@@ -243,10 +243,10 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_root:
             primary_repository = InMemoryJobRepository()
             primary_repository.create(Job(job_id="job-missing", song_name="song"))
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
 
-            report = Phase2ReconcileService(primary_repository, session_factory).generate_report()
+            report = DualWriteReconcileService(primary_repository, session_factory).generate_report()
 
             self.assertFalse(report.is_consistent)
             self.assertFalse(report.is_within_threshold)
@@ -256,12 +256,12 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_root:
             primary_repository = InMemoryJobRepository()
             primary_repository.create(Job(job_id="job-threshold", song_name="song"))
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
-            service = Phase2ReconcileService(
+            service = DualWriteReconcileService(
                 primary_repository,
                 session_factory,
-                thresholds=Phase2ReconcileThresholds(max_missing_jobs=1),
+                thresholds=DualWriteReconcileThresholds(max_missing_jobs=1),
             )
 
             report = service.generate_report()
@@ -272,7 +272,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
     def test_reconcile_service_reports_invalid_outbox_payload(self):
         with tempfile.TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
             primary_repository = SQLAlchemyJobRepository(session_factory)
             job = Job(job_id="job-invalid-payload", song_name="song")
@@ -288,7 +288,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
                 )
             )
 
-            report = Phase2ReconcileService(primary_repository, session_factory).generate_report()
+            report = DualWriteReconcileService(primary_repository, session_factory).generate_report()
 
             self.assertFalse(report.is_consistent)
             self.assertFalse(report.is_within_threshold)
@@ -296,7 +296,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
     def test_reconcile_service_reports_outbox_payload_mismatch(self):
         with tempfile.TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
             primary_repository = SQLAlchemyJobRepository(session_factory)
             job = Job(job_id="job-payload-mismatch", song_name="song")
@@ -326,7 +326,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
                 )
             )
 
-            report = Phase2ReconcileService(primary_repository, session_factory).generate_report()
+            report = DualWriteReconcileService(primary_repository, session_factory).generate_report()
 
             self.assertFalse(report.is_consistent)
             self.assertFalse(report.is_within_threshold)
@@ -336,9 +336,9 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_root:
             primary_repository = InMemoryJobRepository()
             primary_repository.create(Job(job_id="job-report", song_name="song"))
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
-            service = Phase2ReconcileService(primary_repository, session_factory)
+            service = DualWriteReconcileService(primary_repository, session_factory)
 
             report = service.write_report(f"{temp_root}/reports/reconcile.json")
 
@@ -349,7 +349,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
     def test_outbox_dispatcher_marks_events_published(self):
         with tempfile.TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
             outbox_repository = SQLAlchemyOutboxRepository(session_factory)
             outbox_repository.add(
@@ -385,7 +385,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
     def test_outbox_dispatcher_marks_failures(self):
         with tempfile.TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
             outbox_repository = SQLAlchemyOutboxRepository(session_factory)
             outbox_repository.add(
@@ -418,9 +418,9 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
 
     def test_job_service_shadow_writes_initial_records(self):
         with tempfile.TemporaryDirectory() as temp_root:
-            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/phase2.db")
+            session_factory = SQLAlchemySessionFactory(f"sqlite:///{temp_root}/core.db")
             session_factory.create_schema()
-            shadow_service = Phase2ShadowWriteService(session_factory)
+            shadow_service = ShadowWriteService(session_factory)
             primary_repository = SQLAlchemyJobRepository(session_factory)
             service = JobService(primary_repository, shadow_write_service=shadow_service)
 
@@ -429,7 +429,7 @@ class Phase2PostgresFoundationTests(unittest.TestCase):
             self.assertIsNotNone(primary_repository.get(job.job_id))
             self.assertEqual(len(SQLAlchemyJobEventRepository(session_factory).list_for_job(job.job_id)), 1)
 
-    def test_alembic_upgrade_and_downgrade_manage_phase2_schema(self):
+    def test_alembic_upgrade_and_downgrade_manage_core_schema(self):
         with tempfile.TemporaryDirectory() as temp_root:
             database_path = f"{temp_root}/alembic.db"
             config = Config(str(self.PROJECT_ROOT / "alembic.ini"))

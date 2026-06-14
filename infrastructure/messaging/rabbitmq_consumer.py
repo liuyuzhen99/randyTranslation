@@ -90,7 +90,7 @@ class RabbitMQWorkerConsumer:
             import pika
         except ImportError as exc:
             raise RuntimeError(
-                "RabbitMQ worker consumption requires pika. Install requirements before enabling Phase 6."
+                "RabbitMQ worker consumption requires pika. Install requirements before enabling RabbitMQ pipeline."
             ) from exc
 
         parameters = pika.URLParameters(self.config.url)

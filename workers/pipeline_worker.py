@@ -13,14 +13,14 @@ if str(PROJECT_ROOT) not in sys.path:
 from api.config import (  # noqa: E402
     create_artifact_repository,
     create_media_storage,
-    create_phase4_workflow_services,
-    create_phase6_async_pipeline_services,
+    create_review_workflow_services,
+    create_async_pipeline_services,
     create_sqlalchemy_session_factory,
     create_vector_repository,
     load_runtime_settings,
 )
 from application.services.outbox_dispatcher import OutboxDispatcher  # noqa: E402
-from application.services.retry_scheduler import Phase6RetryScheduler  # noqa: E402
+from application.services.retry_scheduler import PipelineRetryScheduler  # noqa: E402
 from domain.queue_topology import PipelineQueueTopology  # noqa: E402
 from infrastructure.messaging.rabbitmq_consumer import RabbitMQWorkerConfig, RabbitMQWorkerConsumer  # noqa: E402
 from infrastructure.messaging.rabbitmq_publisher import RabbitMQPublishConfig, RabbitMQPublisher  # noqa: E402
@@ -32,7 +32,7 @@ from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyPipelin
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Phase 6 RabbitMQ pipeline worker.")
+    parser = argparse.ArgumentParser(description="Run pipeline RabbitMQ worker.")
     parser.add_argument(
         "--queue",
         default="pipeline.command",
@@ -63,14 +63,14 @@ def main() -> int:
     if args.schedule_retries:
         session_factory = create_sqlalchemy_session_factory(runtime_settings=settings)
         if session_factory is None:
-            raise RuntimeError("DATABASE_URL is required to schedule Phase 6 retries.")
-        command_service = create_phase6_async_pipeline_services(
+            raise RuntimeError("DATABASE_URL is required to schedule Pipeline retries.")
+        command_service = create_async_pipeline_services(
             runtime_settings=settings,
             session_factory=session_factory,
         )
         if command_service is None:
-            raise RuntimeError("PHASE6_ASYNC_PIPELINE_ENABLED=true is required to schedule retries.")
-        scheduler = Phase6RetryScheduler(
+            raise RuntimeError("ASYNC_PIPELINE_ENABLED=true is required to schedule retries.")
+        scheduler = PipelineRetryScheduler(
             execution_repository=SQLAlchemyPipelineStageExecutionRepository(session_factory),
             command_service=command_service[0],
         )
@@ -98,7 +98,7 @@ def _run_consumer(queue_name: str, max_messages: int | None, prefetch_count: int
     topology = PipelineQueueTopology()
     session_factory = create_sqlalchemy_session_factory(runtime_settings=settings)
     if session_factory is None:
-        raise RuntimeError("DATABASE_URL is required to run the Phase 6 worker.")
+        raise RuntimeError("DATABASE_URL is required to run the pipeline worker.")
 
     job_repository = SQLAlchemyJobRepository(session_factory)
     media_storage = create_media_storage(runtime_settings=settings)
@@ -106,12 +106,12 @@ def _run_consumer(queue_name: str, max_messages: int | None, prefetch_count: int
         runtime_settings=settings,
         session_factory=session_factory,
     )
-    workflow_services = create_phase4_workflow_services(
+    workflow_services = create_review_workflow_services(
         runtime_settings=settings,
         session_factory=session_factory,
     )
     vector_repository = create_vector_repository(runtime_settings=settings)
-    services = create_phase6_async_pipeline_services(
+    services = create_async_pipeline_services(
         runtime_settings=settings,
         session_factory=session_factory,
         job_repository=job_repository,
@@ -122,7 +122,7 @@ def _run_consumer(queue_name: str, max_messages: int | None, prefetch_count: int
         vector_repository=vector_repository,
     )
     if services is None:
-        raise RuntimeError("PHASE6_ASYNC_PIPELINE_ENABLED=true is required to run the worker.")
+        raise RuntimeError("ASYNC_PIPELINE_ENABLED=true is required to run the worker.")
 
     _command_service, worker = services
     publisher = RabbitMQPublisher(RabbitMQPublishConfig(url=rabbitmq_url))

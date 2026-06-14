@@ -10,7 +10,7 @@ from domain.repositories import VectorRepository
 
 TRANSLATION_MEMORY = "translation_memory"
 AUDIT_STYLE_MEMORY = "user_taste_v1"
-PHASE8_COLLECTIONS = (TRANSLATION_MEMORY, AUDIT_STYLE_MEMORY)
+VECTOR_COLLECTIONS = (TRANSLATION_MEMORY, AUDIT_STYLE_MEMORY)
 
 
 class EmbeddingProvider(Protocol):
@@ -58,7 +58,7 @@ class VectorBackfillReport:
         return not self.mismatches and self.source_count == self.upserted + self.skipped
 
 
-class Phase8VectorMigrationService:
+class VectorMigrationService:
     def __init__(
         self,
         *,
@@ -120,8 +120,8 @@ class Phase8VectorMigrationService:
     def _prepare_record(self, record: VectorRecord) -> VectorRecord:
         metadata = {
             **record.metadata,
-            "phase8_source_namespace": record.namespace,
-            "phase8_deterministic_id": deterministic_vector_id(record.namespace, record.vector_id),
+            "vector_source_namespace": record.namespace,
+            "vector_deterministic_id": deterministic_vector_id(record.namespace, record.vector_id),
         }
         return VectorRecord(
             vector_id=deterministic_vector_id(record.namespace, record.vector_id),
@@ -151,7 +151,7 @@ class RetrievalQualityReport:
         return self.total_cases == self.passed_cases
 
 
-class Phase8RetrievalQualityEvaluator:
+class RetrievalQualityEvaluator:
     def __init__(self, repository: VectorRepository) -> None:
         self.repository = repository
 

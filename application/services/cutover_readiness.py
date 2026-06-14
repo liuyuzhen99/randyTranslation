@@ -48,7 +48,7 @@ class EntityParityReport:
 
 
 @dataclass(frozen=True)
-class Phase9ParityReport:
+class CutoverParityReport:
     generated_at: str
     entities: list[EntityParityReport]
 
@@ -64,13 +64,13 @@ class Phase9ParityReport:
         }
 
 
-class Phase9ReconciliationService:
+class CutoverReconciliationService:
     def compare_snapshots(
         self,
         *,
         legacy_snapshots: dict[str, EntitySnapshot],
         target_snapshots: dict[str, EntitySnapshot],
-    ) -> Phase9ParityReport:
+    ) -> CutoverParityReport:
         entity_names = sorted(set(legacy_snapshots) | set(target_snapshots))
         reports: list[EntityParityReport] = []
         for entity_name in entity_names:
@@ -89,7 +89,7 @@ class Phase9ReconciliationService:
                     field_mismatches=field_mismatches,
                 )
             )
-        return Phase9ParityReport(generated_at=utc_now().isoformat(), entities=reports)
+        return CutoverParityReport(generated_at=utc_now().isoformat(), entities=reports)
 
     @staticmethod
     def _compare_payloads(
@@ -145,7 +145,7 @@ class ShadowTrafficCaseResult:
 
 
 @dataclass(frozen=True)
-class Phase9ShadowTrafficReport:
+class CutoverShadowTrafficReport:
     generated_at: str
     cases: list[ShadowTrafficCaseResult]
 
@@ -168,13 +168,13 @@ class Phase9ShadowTrafficReport:
         }
 
 
-class Phase9ShadowTrafficValidator:
+class CutoverShadowTrafficValidator:
     def compare(
         self,
         *,
         cases: dict[str, tuple[Callable[[], object], Callable[[], object]]],
         normalizer: Callable[[object], object] | None = None,
-    ) -> Phase9ShadowTrafficReport:
+    ) -> CutoverShadowTrafficReport:
         normalize = normalizer or (lambda value: value)
         results: list[ShadowTrafficCaseResult] = []
         for name, (legacy_call, target_call) in cases.items():
@@ -199,7 +199,7 @@ class Phase9ShadowTrafficValidator:
                     mismatch_reason=mismatch_reason,
                 )
             )
-        return Phase9ShadowTrafficReport(generated_at=utc_now().isoformat(), cases=results)
+        return CutoverShadowTrafficReport(generated_at=utc_now().isoformat(), cases=results)
 
     @staticmethod
     def _run(callable_obj: Callable[[], object]) -> tuple[bool, object | None, float, str]:
@@ -222,7 +222,7 @@ class CutoverGateResult:
 
 
 @dataclass(frozen=True)
-class Phase9CutoverReadinessReport:
+class CutoverReadinessReport:
     generated_at: str
     read_source: str
     stability_window_days: int
@@ -242,7 +242,7 @@ class Phase9CutoverReadinessReport:
         }
 
 
-class Phase9CutoverReadinessService:
+class CutoverReadinessService:
     def __init__(
         self,
         *,
@@ -260,9 +260,9 @@ class Phase9CutoverReadinessService:
         self,
         *,
         dual_write_report: dict | None = None,
-        parity_report: Phase9ParityReport | None = None,
-        shadow_report: Phase9ShadowTrafficReport | None = None,
-    ) -> Phase9CutoverReadinessReport:
+        parity_report: CutoverParityReport | None = None,
+        shadow_report: CutoverShadowTrafficReport | None = None,
+    ) -> CutoverReadinessReport:
         gates = [
             CutoverGateResult(
                 "schema_freeze",
@@ -290,7 +290,7 @@ class Phase9CutoverReadinessService:
                 shadow_report.to_dict() if shadow_report else {"reason": "shadow traffic report unavailable"},
             ),
         ]
-        return Phase9CutoverReadinessReport(
+        return CutoverReadinessReport(
             generated_at=utc_now().isoformat(),
             read_source=self.read_source,
             stability_window_days=self.stability_window_days,

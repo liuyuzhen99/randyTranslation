@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 import api.service as api_service
 
 
-class Phase0StartupGuardrailTests(unittest.TestCase):
+class StartupGuardrailTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
 

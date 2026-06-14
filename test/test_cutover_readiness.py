@@ -8,18 +8,18 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from application.services.phase9_cutover import (
+from application.services.cutover_readiness import (
     EntitySnapshot,
-    Phase9CutoverReadinessService,
-    Phase9ReconciliationService,
-    Phase9ShadowTrafficValidator,
+    CutoverReadinessService,
+    CutoverReconciliationService,
+    CutoverShadowTrafficValidator,
 )
 import api.service as api_service
 
 
-class Phase9CutoverTests(unittest.TestCase):
+class CutoverReadinessTests(unittest.TestCase):
     def test_reconciliation_reports_count_and_key_mismatches(self):
-        report = Phase9ReconciliationService().compare_snapshots(
+        report = CutoverReconciliationService().compare_snapshots(
             legacy_snapshots={
                 "artists": EntitySnapshot.from_iterable("artists", ["a1", "a2"]),
                 "videos": EntitySnapshot.from_iterable("videos", ["v1"]),
@@ -42,7 +42,7 @@ class Phase9CutoverTests(unittest.TestCase):
         self.assertEqual(by_entity["reviews"]["extra_in_target"], ["r1"])
 
     def test_reconciliation_reports_field_level_mismatches(self):
-        report = Phase9ReconciliationService().compare_snapshots(
+        report = CutoverReconciliationService().compare_snapshots(
             legacy_snapshots={
                 "jobs": EntitySnapshot.from_records("jobs", {
                     "j1": {"status": "done", "result": "s3://bucket/v1.mp4"},
@@ -69,7 +69,7 @@ class Phase9CutoverTests(unittest.TestCase):
         self.assertEqual(mismatch_by_field["status"]["target"], "done")
 
     def test_reconciliation_no_field_mismatches_when_payloads_match(self):
-        report = Phase9ReconciliationService().compare_snapshots(
+        report = CutoverReconciliationService().compare_snapshots(
             legacy_snapshots={
                 "artists": EntitySnapshot.from_records("artists", {
                     "a1": {"name": "Kendrick", "followers": 1000},
@@ -86,7 +86,7 @@ class Phase9CutoverTests(unittest.TestCase):
         self.assertEqual(artists_report["field_mismatches"], [])
 
     def test_from_iterable_snapshots_have_no_payloads_and_skip_field_comparison(self):
-        report = Phase9ReconciliationService().compare_snapshots(
+        report = CutoverReconciliationService().compare_snapshots(
             legacy_snapshots={"jobs": EntitySnapshot.from_iterable("jobs", ["j1", "j2"])},
             target_snapshots={"jobs": EntitySnapshot.from_iterable("jobs", ["j1", "j2"])},
         )
@@ -95,7 +95,7 @@ class Phase9CutoverTests(unittest.TestCase):
         self.assertEqual(jobs_report["field_mismatches"], [])
 
     def test_shadow_traffic_validator_compares_normalized_outputs(self):
-        report = Phase9ShadowTrafficValidator().compare(
+        report = CutoverShadowTrafficValidator().compare(
             cases={
                 "pipeline-list": (
                     lambda: {"items": [{"id": "job-1"}], "generated_at": "legacy"},
@@ -113,7 +113,7 @@ class Phase9CutoverTests(unittest.TestCase):
         def fail():
             raise RuntimeError("target unavailable")
 
-        report = Phase9ShadowTrafficValidator().compare(
+        report = CutoverShadowTrafficValidator().compare(
             cases={"artists": (lambda: {"ok": True}, fail)}
         )
 
@@ -122,15 +122,15 @@ class Phase9CutoverTests(unittest.TestCase):
         self.assertIn("target unavailable", report.cases[0].mismatch_reason)
 
     def test_cutover_readiness_requires_all_gates(self):
-        parity_report = Phase9ReconciliationService().compare_snapshots(
+        parity_report = CutoverReconciliationService().compare_snapshots(
             legacy_snapshots={"jobs": EntitySnapshot.from_iterable("jobs", ["j1"])},
             target_snapshots={"jobs": EntitySnapshot.from_iterable("jobs", ["j1"])},
         )
-        shadow_report = Phase9ShadowTrafficValidator().compare(
+        shadow_report = CutoverShadowTrafficValidator().compare(
             cases={"jobs": (lambda: {"j1": "ok"}, lambda: {"j1": "ok"})}
         )
 
-        report = Phase9CutoverReadinessService(
+        report = CutoverReadinessService(
             read_source="legacy",
             schema_freeze_enabled=True,
             rollback_enabled=True,
@@ -144,7 +144,7 @@ class Phase9CutoverTests(unittest.TestCase):
         self.assertTrue(report.ready_for_cutover)
 
     def test_cutover_readiness_blocks_when_parity_missing(self):
-        report = Phase9CutoverReadinessService(
+        report = CutoverReadinessService(
             read_source="legacy",
             schema_freeze_enabled=True,
             rollback_enabled=True,
@@ -185,7 +185,7 @@ class Phase9CutoverTests(unittest.TestCase):
             result = subprocess.run(
                 [
                     sys.executable,
-                    "scripts/phase9_cutover_report.py",
+                    "scripts/cutover_readiness_report.py",
                     "--legacy-snapshot",
                     legacy_path,
                     "--target-snapshot",
@@ -208,20 +208,24 @@ class Phase9CutoverTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertTrue(payload["cutover_readiness"]["ready_for_cutover"])
 
-    def test_internal_phase9_cutover_readiness_endpoint_reports_blocked_gates(self):
+    def test_internal_cutover_readiness_endpoint_reports_blocked_gates(self):
         env = {
             "DEEPSEEK_API_KEY": "test-key",
             "DEEPSEEK_BASE_URL": "https://example.local",
             "JOB_REPOSITORY_BACKEND": "memory",
             "DATABASE_URL": "",
-            "PHASE2_SHADOW_WRITE_ENABLED": "false",
-            "PHASE2_RECONCILE_ENABLED": "false",
-            "PHASE2_OUTBOX_DISPATCH_ENABLED": "false",
-            "PHASE6_ASYNC_PIPELINE_ENABLED": "false",
-            "PHASE9_SCHEMA_FREEZE_ENABLED": "true",
-            "PHASE9_ROLLBACK_ENABLED": "true",
-            "PHASE9_CUTOVER_READ_SOURCE": "legacy",
+            "SHADOW_WRITE_ENABLED": "false",
+            "DUAL_WRITE_RECONCILE_ENABLED": "false",
+            "OUTBOX_DISPATCH_ENABLED": "false",
+            "ASYNC_PIPELINE_ENABLED": "false",
+            "PIPELINE_SERVICE_WORKER_ENABLED": "false",
+            "SCHEMA_FREEZE_ENABLED": "true",
+            "ROLLBACK_ENABLED": "true",
+            "CUTOVER_READ_SOURCE": "legacy",
             "MEDIA_STORAGE_BACKEND": "local",
+            "VECTOR_REPOSITORY_BACKEND": "sqlite",
+            "QDRANT_URL": "",
+            "RABBITMQ_URL": "",
             "POSTGRES_HOST": "",
             "POSTGRES_DB": "",
             "POSTGRES_USER": "",
@@ -230,7 +234,7 @@ class Phase9CutoverTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=False):
             app = api_service.create_app()
             with TestClient(app) as client:
-                response = client.get("/internal/phase9/cutover-readiness")
+                response = client.get("/internal/cutover/readiness")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()["report"]

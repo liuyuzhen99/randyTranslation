@@ -5,8 +5,8 @@ import json
 import os
 from dataclasses import asdict
 
-from application.services.phase8_vectors import (
-    Phase8RetrievalQualityEvaluator,
+from application.services.vector_migration import (
+    RetrievalQualityEvaluator,
     RetrievalQualityCase,
     build_embedding_provider,
 )
@@ -15,10 +15,13 @@ from infrastructure.vector.qdrant_repository import QdrantVectorRepository
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Phase 8 retrieval quality baseline runner.")
+    parser = argparse.ArgumentParser(description="vector retrieval quality baseline runner.")
     parser.add_argument("--cases", required=True, help="JSON file containing retrieval cases.")
     parser.add_argument("--backend", default=os.getenv("VECTOR_REPOSITORY_BACKEND", "qdrant"))
-    parser.add_argument("--source-sqlite", default=os.getenv("PHASE8_SOURCE_SQLITE", "data/jobs.db"))
+    parser.add_argument(
+        "--source-sqlite",
+        default=os.getenv("VECTOR_SOURCE_SQLITE", os.getenv("PHASE8_SOURCE_SQLITE", "data/jobs.db")),
+    )
     parser.add_argument("--qdrant-url", default=os.getenv("QDRANT_URL", ""))
     parser.add_argument("--qdrant-api-key", default=os.getenv("QDRANT_API_KEY", ""))
     parser.add_argument("--collection-prefix", default=os.getenv("QDRANT_COLLECTION_PREFIX", ""))
@@ -27,7 +30,7 @@ def main() -> int:
     args = parser.parse_args()
 
     repository = _build_repository(args)
-    evaluator = Phase8RetrievalQualityEvaluator(repository)
+    evaluator = RetrievalQualityEvaluator(repository)
     cases = _load_cases(args.cases)
     report = evaluator.evaluate(cases)
     payload = asdict(report)
