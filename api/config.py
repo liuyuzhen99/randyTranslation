@@ -9,8 +9,7 @@ from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from application.services.outbox_dispatcher import OutboxDispatcher
-from application.services.async_pipeline import AsyncPipelineCommandService, PipelineStageWorker
-from application.services.pipeline_stage_handlers import PipelineStageHandlers
+from application.services.async_pipeline import AsyncPipelineCommandService
 from application.services.review_workflow_service import (
     ReviewWorkflowServices,
     build_review_workflow_services,
@@ -35,7 +34,6 @@ from infrastructure.persistence.sqlalchemy_repositories import (
     SQLAlchemyCandidateRepository,
     SQLAlchemyJobRepository,
     SQLAlchemyOutboxRepository,
-    SQLAlchemyPipelineStageExecutionRepository,
     SQLAlchemyReviewRepository,
     SQLAlchemySessionFactory,
     SQLAlchemySubtitleRepository,
@@ -178,7 +176,7 @@ class AppRuntimeSettings(BaseSettings):
     dual_write_reconcile_max_outbox_payload_mismatches: int = 0
     outbox_dispatch_enabled: bool = False
     async_pipeline_enabled: bool = False
-    pipeline_service_worker_enabled: bool = True
+    pipeline_service_worker_enabled: bool = False
     pipeline_service_worker_poll_seconds: float = 1.0
     pipeline_max_stage_attempts: int = 3
     pipeline_retry_backoff_base_seconds: int = 30
@@ -488,48 +486,22 @@ def create_outbox_dispatcher(
     return OutboxDispatcher(SQLAlchemyOutboxRepository(active_session_factory), publisher)
 
 
-def create_async_pipeline_services(
+def create_async_pipeline_command_service(
     environ: Mapping[str, str] | None = None,
     runtime_settings: AppRuntimeSettings | None = None,
     session_factory: SQLAlchemySessionFactory | None = None,
-    job_repository: JobRepository | None = None,
-    media_storage=None,
-    producer_backend_factory=None,
-    workflow_services: ReviewWorkflowServices | None = None,
-    artifact_repository=None,
-    vector_repository=None,
-) -> tuple[AsyncPipelineCommandService, PipelineStageWorker] | None:
+) -> AsyncPipelineCommandService | None:
     settings = runtime_settings or load_runtime_settings(environ)
     if not settings.async_pipeline_enabled:
         return None
     active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
     if active_session_factory is None:
         raise RuntimeError("ASYNC_PIPELINE_ENABLED requires DATABASE_URL to be configured.")
-    active_job_repository = job_repository or SQLAlchemyJobRepository(active_session_factory)
     outbox_repository = SQLAlchemyOutboxRepository(active_session_factory)
-    command_service = AsyncPipelineCommandService(
+    return AsyncPipelineCommandService(
         outbox_repository=outbox_repository,
         max_attempts=settings.pipeline_max_stage_attempts,
     )
-    handlers = None
-    if media_storage is not None and producer_backend_factory is not None:
-        handlers = PipelineStageHandlers(
-            media_storage=media_storage,
-            producer_backend_factory=producer_backend_factory,
-            workflow_services=workflow_services,
-            artifact_repository=artifact_repository,
-            vector_repository=vector_repository,
-            final_artifact_retention_days=settings.artifact_final_retention_days,
-        ).as_mapping()
-    worker = PipelineStageWorker(
-        job_repository=active_job_repository,
-        execution_repository=SQLAlchemyPipelineStageExecutionRepository(active_session_factory),
-        command_service=command_service,
-        handlers=handlers,
-        backoff_base_seconds=settings.pipeline_retry_backoff_base_seconds,
-        session_factory=active_session_factory,
-    )
-    return command_service, worker
 
 
 def create_artist_catalog_service(
@@ -579,7 +551,7 @@ def create_review_workflow_services(
 create_phase2_shadow_write_service = create_shadow_write_service
 create_phase2_reconcile_service = create_dual_write_reconcile_service
 create_phase2_outbox_dispatcher = create_outbox_dispatcher
-create_phase6_async_pipeline_services = create_async_pipeline_services
+create_phase6_async_pipeline_services = create_async_pipeline_command_service
 create_phase3_catalog_service = create_artist_catalog_service
 create_phase4_workflow_services = create_review_workflow_services
 

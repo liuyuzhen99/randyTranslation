@@ -225,7 +225,8 @@ class ReviewWorkflowTests(unittest.TestCase):
         with TemporaryDirectory() as temp_root:
             app = self._create_app(temp_root)
             command_service = StubCommandService()
-            app.state.async_pipeline_services = (command_service, None)
+            app.state.async_pipeline_command_service = command_service
+            app.state.async_pipeline_services = command_service
 
             with TestClient(app) as client:
                 initial_queue = client.get("/v1/audit-queue").json()
@@ -268,6 +269,7 @@ class ReviewWorkflowTests(unittest.TestCase):
     def test_render_requires_async_pipeline(self):
         with TemporaryDirectory() as temp_root:
             app = self._create_app(temp_root)
+            app.state.async_pipeline_command_service = None
             app.state.async_pipeline_services = None
 
             with TestClient(app) as client:

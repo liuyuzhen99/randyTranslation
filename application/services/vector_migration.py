@@ -215,15 +215,29 @@ class BGEEmbeddingProvider:
     dimension = 1024
 
     def __init__(self, model: str = MODEL) -> None:
+        self._model_name = model
+        self._torch = None
+        self._tokenizer = None
+        self._model = None
+
+    def _ensure_loaded(self) -> None:
+        if self._model is not None and self._tokenizer is not None and self._torch is not None:
+            return
+
         import torch
         from transformers import AutoModel, AutoTokenizer
 
         self._torch = torch
-        self._tokenizer = AutoTokenizer.from_pretrained(model)
-        self._model = AutoModel.from_pretrained(model)
+        self._tokenizer = AutoTokenizer.from_pretrained(self._model_name)
+        self._model = AutoModel.from_pretrained(self._model_name)
         self._model.eval()
 
     def embed(self, text: str) -> list[float]:
+        self._ensure_loaded()
+        assert self._model is not None
+        assert self._tokenizer is not None
+        assert self._torch is not None
+
         inputs = self._tokenizer(
             text.strip() or "empty",
             padding=True,

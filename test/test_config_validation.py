@@ -52,7 +52,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(settings.dual_write_reconcile_max_outbox_payload_mismatches, 0)
         self.assertFalse(settings.outbox_dispatch_enabled)
         self.assertFalse(settings.async_pipeline_enabled)
-        self.assertTrue(settings.pipeline_service_worker_enabled)
+        self.assertFalse(settings.pipeline_service_worker_enabled)
         self.assertEqual(settings.pipeline_service_worker_poll_seconds, 1.0)
         self.assertEqual(settings.pipeline_max_stage_attempts, 3)
         self.assertEqual(settings.pipeline_retry_backoff_base_seconds, 30)

@@ -32,6 +32,7 @@ from infrastructure.persistence.sqlalchemy_repositories import (
 from infrastructure.messaging.rabbitmq_consumer import RabbitMQWorkerConfig, RabbitMQWorkerConsumer
 from infrastructure.messaging.rabbitmq_topology import RabbitMQTopologyConfig, RabbitMQTopologyManager
 from infrastructure.storage.local_media_storage import LocalFilesystemMediaStorage
+from workers.pipeline_runtime import create_pipeline_stage_worker
 
 
 class FakeProducerBackend:
@@ -390,10 +391,7 @@ class AsyncPipelineTests(unittest.TestCase):
                     )
                 ],
             )
-            with patch.dict(os.environ, env, clear=False), patch(
-                "api.service.create_default_producer_backend",
-                FakeProducerBackend,
-            ):
+            with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app(artist_catalog_providers=providers)
                 from domain.entities import Artist
 
@@ -465,10 +463,7 @@ class AsyncPipelineTests(unittest.TestCase):
                 ],
             )
             publisher = RecordingPublisher()
-            with patch.dict(os.environ, env, clear=False), patch(
-                "api.service.create_default_producer_backend",
-                FakeProducerBackend,
-            ):
+            with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app(
                     outbox_publisher=publisher,
                     artist_catalog_providers=providers,
@@ -511,7 +506,7 @@ class AsyncPipelineTests(unittest.TestCase):
             ]
             self.assertEqual(pending, [])
 
-    def test_service_worker_auto_runs_after_candidate_is_added_to_pipeline(self):
+    def test_api_service_does_not_auto_run_pipeline_worker(self):
         with TemporaryDirectory() as temp_root:
             env = {
                 "DEEPSEEK_API_KEY": "test-key",
@@ -539,10 +534,7 @@ class AsyncPipelineTests(unittest.TestCase):
                     )
                 ],
             )
-            with patch.dict(os.environ, env, clear=False), patch(
-                "api.service.create_default_producer_backend",
-                FakeProducerBackend,
-            ):
+            with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app(artist_catalog_providers=providers)
                 from domain.entities import Artist
 
@@ -558,12 +550,19 @@ class AsyncPipelineTests(unittest.TestCase):
                     response = client.post(f"/v1/candidates/{candidate_id}/pipeline")
                     self.assertEqual(response.status_code, 200)
                     self.assertIsNotNone(response.json()["task_id"])
-                    self._wait_for_stage(app.state.session_factory, candidate_id, StageType.MANUAL_REVIEW)
 
                     pipeline_item = client.get("/v1/pipeline").json()["items"][0]
                     self.assertEqual(pipeline_item["candidate_id"], candidate_id)
-                    self.assertEqual(pipeline_item["async_execution"]["current_stage"], "manual_review")
-                    self.assertEqual(pipeline_item["async_execution"]["pause_reason"], "manual_review_pending")
+                    self.assertNotIn("async_execution", pipeline_item)
+
+                    outbox_repository = SQLAlchemyOutboxRepository(app.state.session_factory)
+                    pending = [
+                        event
+                        for event in outbox_repository.list_pending()
+                        if event.aggregate_id == response.json()["task_id"]
+                        and event.topic == "pipeline.command"
+                    ]
+                    self.assertEqual(len(pending), 1)
 
     def test_operational_health_readiness_reports_dependency_statuses(self):
         with TemporaryDirectory() as temp_root:
@@ -676,11 +675,19 @@ class AsyncPipelineTests(unittest.TestCase):
                     )
                 ],
             )
-            with patch.dict(os.environ, env, clear=False), patch(
-                "api.service.create_default_producer_backend",
-                FakeProducerBackend,
-            ):
+            with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app(artist_catalog_providers=providers)
+                worker = create_pipeline_stage_worker(
+                    command_service=app.state.async_pipeline_command_service,
+                    runtime_settings=app.state.runtime_settings,
+                    session_factory=app.state.session_factory,
+                    job_repository=app.state.job_repository,
+                    media_storage=app.state.media_storage,
+                    producer_backend_factory=FakeProducerBackend,
+                    workflow_services=app.state.review_workflow_services,
+                    artifact_repository=app.state.artifact_repository,
+                    vector_repository=app.state.vector_repository,
+                )
                 from domain.entities import Artist
 
                 app.state.artist_catalog_service.artist_repository.upsert(
@@ -700,7 +707,6 @@ class AsyncPipelineTests(unittest.TestCase):
                     self.assertEqual(render_response.status_code, 200)
 
                     outbox_repository = SQLAlchemyOutboxRepository(app.state.session_factory)
-                    _command_service, worker = app.state.async_pipeline_services
 
                     for expected_stage in (
                         StageType.DOWNLOAD,

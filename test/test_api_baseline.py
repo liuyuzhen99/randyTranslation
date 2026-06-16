@@ -11,11 +11,6 @@ from application.services.job_service import JobService
 from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
 
 
-class NoopOrchestrator:
-    def run(self, task_id: str, song_name: str) -> None:
-        return None
-
-
 class ApiBaselineTests(unittest.TestCase):
     def _base_env(self, **overrides):
         env = {
@@ -39,15 +34,13 @@ class ApiBaselineTests(unittest.TestCase):
 
         self.repo = InMemoryJobRepository()
         self.job_service = JobService(self.repo)
-        self.orchestrator = NoopOrchestrator()
 
         api_service.app.state.job_service = self.job_service
-        api_service.app.state.orchestrator = self.orchestrator
+        api_service.app.state.async_pipeline_command_service = None
         api_service.app.state.async_pipeline_services = None
         api_service.app.state.outbox_dispatcher = None
         api_service.app.state.reconcile_service = None
         api_service.job_service = self.job_service
-        api_service.orchestrator = self.orchestrator
         self.client = TestClient(api_service.app)
         self.stack.enter_context(self.client)
 
@@ -56,18 +49,14 @@ class ApiBaselineTests(unittest.TestCase):
 
     def test_create_task_contract(self):
         response = self.client.post("/create_task", json={"song_name": "N95"})
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-
-        self.assertIn("task_id", data)
-        self.assertIsInstance(data["task_id"], str)
-        self.assertEqual(len(data["task_id"]), 8)
-        self.assertIn("message", data)
-        self.assertIn("任务", data["message"])
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json(),
+            {"detail": "Async pipeline is required; legacy in-process execution has been removed"},
+        )
 
     def test_check_status_contract(self):
-        create_res = self.client.post("/create_task", json={"song_name": "DNA"})
-        task_id = create_res.json()["task_id"]
+        task_id = self.job_service.create_job("DNA").job_id
 
         response = self.client.get(f"/check_status/{task_id}")
         self.assertEqual(response.status_code, 200)
@@ -82,8 +71,8 @@ class ApiBaselineTests(unittest.TestCase):
         self.assertEqual(response.json(), {"code": "not_found", "resource": "job", "id": "unknown-id"})
 
     def test_list_tasks_contract(self):
-        first = self.client.post("/create_task", json={"song_name": "HUMBLE"}).json()["task_id"]
-        second = self.client.post("/create_task", json={"song_name": "Money Trees"}).json()["task_id"]
+        first = self.job_service.create_job("HUMBLE").job_id
+        second = self.job_service.create_job("Money Trees").job_id
 
         response = self.client.get("/list_tasks")
         self.assertEqual(response.status_code, 200)
@@ -104,12 +93,10 @@ class ApiBaselineTests(unittest.TestCase):
 
             with patch.dict(os.environ, env, clear=False):
                 first_app = api_service.create_app()
-                first_app.state.orchestrator = NoopOrchestrator()
                 with TestClient(first_app) as first_client:
-                    task_id = first_client.post("/create_task", json={"song_name": "Count Me Out"}).json()["task_id"]
+                    task_id = first_app.state.job_service.create_job("Count Me Out").job_id
 
                 second_app = api_service.create_app()
-                second_app.state.orchestrator = NoopOrchestrator()
                 with TestClient(second_app) as second_client:
                     response = second_client.get(f"/check_status/{task_id}")
                     self.assertEqual(response.status_code, 200)
@@ -126,12 +113,10 @@ class ApiBaselineTests(unittest.TestCase):
 
             with patch.dict(os.environ, env, clear=False):
                 first_app = api_service.create_app()
-                first_app.state.orchestrator = NoopOrchestrator()
                 with TestClient(first_app) as first_client:
-                    task_id = first_client.post("/create_task", json={"song_name": "Worldwide Steppers"}).json()["task_id"]
+                    task_id = first_app.state.job_service.create_job("Worldwide Steppers").job_id
 
                 second_app = api_service.create_app()
-                second_app.state.orchestrator = NoopOrchestrator()
                 with TestClient(second_app) as second_client:
                     response = second_client.get(f"/check_status/{task_id}")
                     self.assertEqual(response.status_code, 200)
@@ -153,9 +138,8 @@ class ApiBaselineTests(unittest.TestCase):
 
             with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app()
-                app.state.orchestrator = NoopOrchestrator()
                 with TestClient(app) as client:
-                    client.post("/create_task", json={"song_name": "Silent Hill"})
+                    app.state.job_service.create_job("Silent Hill")
                     response = client.get("/internal/dual-write/reconcile")
 
             self.assertEqual(response.status_code, 200)
@@ -179,9 +163,8 @@ class ApiBaselineTests(unittest.TestCase):
 
             with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app()
-                app.state.orchestrator = NoopOrchestrator()
                 with TestClient(app) as client:
-                    client.post("/create_task", json={"song_name": "Element"})
+                    app.state.job_service.create_job("Element")
                     response = client.post("/internal/outbox/dispatch")
 
             self.assertEqual(response.status_code, 503)
@@ -207,9 +190,8 @@ class ApiBaselineTests(unittest.TestCase):
 
             with patch.dict(os.environ, env, clear=False):
                 app = api_service.create_app(outbox_publisher=Publisher())
-                app.state.orchestrator = NoopOrchestrator()
                 with TestClient(app) as client:
-                    client.post("/create_task", json={"song_name": "Element"})
+                    app.state.job_service.create_job("Element")
                     response = client.post("/internal/outbox/dispatch")
 
             self.assertEqual(response.status_code, 200)

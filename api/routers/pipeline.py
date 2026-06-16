@@ -7,10 +7,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 
 from api.dependencies import (
     get_job_service,
-    get_orchestrator,
     get_outbox_dispatcher,
     get_review_workflow_services,
-    get_async_pipeline_services,
+    get_async_pipeline_command_service,
     get_session_factory,
     get_shadow_write_degraded,
 )
@@ -237,36 +236,28 @@ def _serialize_pipeline_activity(candidate_id: str, *, job_service, review_servi
 @router.post("/create_task", response_model=TaskResponse)
 async def create_task(
     request: TaskRequest,
-    background_tasks: BackgroundTasks,
     http_request: Request,
     response: Response,
     job_service=Depends(get_job_service),
-    pipeline_services=Depends(get_async_pipeline_services),
+    command_service=Depends(get_async_pipeline_command_service),
     outbox_dispatcher=Depends(get_outbox_dispatcher),
-    orchestrator=Depends(get_orchestrator),
 ):
     response.headers["Deprecation"] = "true"
     response.headers["Link"] = '</v1/candidates/{candidate_id}/render>; rel="successor-version"'
     system_logger.info(f"收到创建任务请求: 歌名={request.song_name}")
+    if command_service is None:
+        raise HTTPException(status_code=503, detail="Async pipeline is required; legacy in-process execution has been removed")
+
     job = job_service.create_job(request.song_name)
 
-    if pipeline_services is not None:
-        command_service, _worker = pipeline_services
-        command_service.enqueue_first_stage(
-            job,
-            candidate_id=request.candidate_id,
-            trace_id=getattr(http_request.state, "request_id", None),
-        )
-        _dispatch_outbox_if_available(outbox_dispatcher)
-        system_logger.info(f"任务 {job.job_id} 已写入 pipeline outbox，歌名: {request.song_name}")
-        return {"task_id": job.job_id, "message": "任务已写入异步 pipeline，请稍后通过 ID 查询进度", "candidate_id": request.candidate_id}
-
-    if request.candidate_id:
-        background_tasks.add_task(orchestrator.run, job.job_id, request.song_name, request.candidate_id)
-    else:
-        background_tasks.add_task(orchestrator.run, job.job_id, request.song_name)
-    system_logger.info(f"任务 {job.job_id} 已创建并加入后台队列，歌名: {request.song_name}")
-    return {"task_id": job.job_id, "message": "任务已启动，请稍后通过 ID 查询进度", "candidate_id": request.candidate_id}
+    command_service.enqueue_first_stage(
+        job,
+        candidate_id=request.candidate_id,
+        trace_id=getattr(http_request.state, "request_id", None),
+    )
+    _dispatch_outbox_if_available(outbox_dispatcher)
+    system_logger.info(f"任务 {job.job_id} 已写入 pipeline outbox，歌名: {request.song_name}")
+    return {"task_id": job.job_id, "message": "任务已写入异步 pipeline，请稍后通过 ID 查询进度", "candidate_id": request.candidate_id}
 
 
 @router.get("/check_status/{task_id}")
@@ -302,7 +293,7 @@ async def render_candidate(
     candidate_id: str,
     job_service=Depends(get_job_service),
     review_services=Depends(get_review_workflow_services),
-    pipeline_services=Depends(get_async_pipeline_services),
+    command_service=Depends(get_async_pipeline_command_service),
     outbox_dispatcher=Depends(get_outbox_dispatcher),
 ):
     if review_services is None:
@@ -318,12 +309,11 @@ async def render_candidate(
     if existing_render_job is not None and existing_render_job.get("status") in {JobStatus.PENDING.value, JobStatus.PROCESSING.value}:
         return {"task_id": existing_render_job["job_id"], "message": "候选视频已有渲染任务正在排队或执行，已返回现有任务 ID", "candidate_id": candidate.candidate_id}
 
-    if pipeline_services is None:
+    if command_service is None:
         raise HTTPException(status_code=503, detail="Async pipeline is not enabled")
 
     job = job_service.create_job(candidate.title)
     _record_render_job(candidate.candidate_id, job.job_id, review_services=review_services, actor_id="frontend-user-1")
-    command_service, _worker = pipeline_services
     command_service.enqueue_first_stage(job, candidate_id=candidate.candidate_id)
     _dispatch_outbox_if_available(outbox_dispatcher)
     return {"task_id": job.job_id, "message": "候选视频渲染任务已写入异步 pipeline，请稍后通过 ID 查询进度", "candidate_id": candidate.candidate_id}
@@ -337,7 +327,7 @@ async def add_candidate_to_pipeline(
     x_actor_id: str | None = Header(default=None),
     job_service=Depends(get_job_service),
     review_services=Depends(get_review_workflow_services),
-    pipeline_services=Depends(get_async_pipeline_services),
+    command_service=Depends(get_async_pipeline_command_service),
     outbox_dispatcher=Depends(get_outbox_dispatcher),
 ):
     if review_services is None:
@@ -353,12 +343,12 @@ async def add_candidate_to_pipeline(
             trace_id=getattr(request.state, "request_id", None),
             job_service=job_service,
             review_services=review_services,
-            pipeline_services=pipeline_services,
+            command_service=command_service,
             outbox_dispatcher=outbox_dispatcher,
         )
         response_payload["task_id"] = task_id
         response_payload["message"] = message
-        if pipeline_services is not None:
+        if command_service is not None:
             response_payload["candidate_status"] = CandidateStatus.DOWNLOADING.value
         return response_payload
     except KeyError as exc:
@@ -371,7 +361,7 @@ async def add_candidate_to_pipeline(
 async def retry_candidate_pipeline(
     candidate_id: str,
     review_services=Depends(get_review_workflow_services),
-    pipeline_services=Depends(get_async_pipeline_services),
+    command_service=Depends(get_async_pipeline_command_service),
     outbox_dispatcher=Depends(get_outbox_dispatcher),
     session_factory=Depends(get_session_factory),
 ):
@@ -379,7 +369,7 @@ async def retry_candidate_pipeline(
         return _manual_retry_candidate_pipeline(
             candidate_id,
             review_services=review_services,
-            pipeline_services=pipeline_services,
+            command_service=command_service,
             outbox_dispatcher=outbox_dispatcher,
             session_factory=session_factory,
         )
@@ -501,7 +491,7 @@ def _start_candidate_pipeline_job(
     trace_id: str | None,
     job_service,
     review_services,
-    pipeline_services,
+    command_service,
     outbox_dispatcher,
 ) -> tuple[str, str]:
     active_job = _get_active_pipeline_job(candidate.candidate_id, job_service=job_service, review_services=review_services)
@@ -509,12 +499,11 @@ def _start_candidate_pipeline_job(
         return active_job.job_id, "候选视频已有 pipeline job 正在排队或执行，已返回现有任务 ID"
 
     job = job_service.create_job(candidate.title)
-    if review_services is not None and pipeline_services is not None:
+    if review_services is not None and command_service is not None:
         candidate.status = CandidateStatus.DOWNLOADING
         candidate.last_seen_at = utc_now()
         review_services.pipeline_service.support.candidate_repository.upsert(candidate)
-    if pipeline_services is not None:
-        command_service, _worker = pipeline_services
+    if command_service is not None:
         command_service.enqueue_first_stage(job, candidate_id=candidate.candidate_id, trace_id=trace_id)
         _dispatch_outbox_if_available(outbox_dispatcher)
         _record_pipeline_job(candidate.candidate_id, job.job_id, actor_id, mode="async_pipeline", review_services=review_services)
@@ -528,11 +517,11 @@ def _manual_retry_candidate_pipeline(
     candidate_id: str,
     *,
     review_services,
-    pipeline_services,
+    command_service,
     outbox_dispatcher,
     session_factory,
 ) -> CandidatePipelineRetryResponse:
-    if review_services is None or pipeline_services is None or session_factory is None:
+    if review_services is None or command_service is None or session_factory is None:
         raise HTTPException(status_code=503, detail="Async pipeline is not enabled")
 
     from infrastructure.persistence.sqlalchemy_repositories import (
@@ -553,7 +542,6 @@ def _manual_retry_candidate_pipeline(
         if not execution.result_payload:
             continue
         retry_message = PipelineStageMessage.from_payload(execution.result_payload)
-        command_service, _worker = pipeline_services
         outbox_repository = SQLAlchemyOutboxRepository(session_factory)
         event_id = f"{retry_message.message_type}:{retry_message.dedupe_key}"
         existing_event = outbox_repository.get(event_id)

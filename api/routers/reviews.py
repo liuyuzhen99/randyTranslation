@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from api.dependencies import (
     get_review_workflow_services,
-    get_async_pipeline_services,
+    get_async_pipeline_command_service,
     get_outbox_dispatcher,
     get_session_factory,
 )
@@ -34,11 +34,11 @@ def _resume_pipeline_after_review(
     review_type,
     song_name: str,
     *,
-    pipeline_services,
+    command_service,
     outbox_dispatcher,
     session_factory,
 ) -> None:
-    if pipeline_services is None or session_factory is None:
+    if command_service is None or session_factory is None:
         return
     next_stage = None
     if review_type == ReviewType.MANUAL_REVIEW:
@@ -58,7 +58,6 @@ def _resume_pipeline_after_review(
         resume_payload = {}
     resume_payload.pop("pause", None)
     resume_payload.pop("pause_reason", None)
-    command_service, _worker = pipeline_services
     command_service.enqueue_stage(
         PipelineStageMessage.build(
             message_type="pipeline.stage.command",
@@ -117,7 +116,7 @@ async def approve_review(
     request: ReviewDecisionRequest,
     x_actor_id: str | None = Header(default=None),
     review_services=Depends(get_review_workflow_services),
-    pipeline_services=Depends(get_async_pipeline_services),
+    command_service=Depends(get_async_pipeline_command_service),
     outbox_dispatcher=Depends(get_outbox_dispatcher),
     session_factory=Depends(get_session_factory),
 ):
@@ -137,7 +136,7 @@ async def approve_review(
                 review_before.subject_id,
                 review_before.review_type,
                 candidate.title,
-                pipeline_services=pipeline_services,
+                command_service=command_service,
                 outbox_dispatcher=outbox_dispatcher,
                 session_factory=session_factory,
             )

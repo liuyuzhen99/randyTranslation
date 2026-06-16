@@ -14,7 +14,7 @@ from api.config import (  # noqa: E402
     create_artifact_repository,
     create_media_storage,
     create_review_workflow_services,
-    create_async_pipeline_services,
+    create_async_pipeline_command_service,
     create_sqlalchemy_session_factory,
     create_vector_repository,
     load_runtime_settings,
@@ -29,6 +29,7 @@ from infrastructure.pipeline.legacy_producer_adapter import create_default_produ
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyJobRepository  # noqa: E402
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyOutboxRepository  # noqa: E402
 from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyPipelineStageExecutionRepository  # noqa: E402
+from workers.pipeline_runtime import create_pipeline_stage_worker  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,7 +65,7 @@ def main() -> int:
         session_factory = create_sqlalchemy_session_factory(runtime_settings=settings)
         if session_factory is None:
             raise RuntimeError("DATABASE_URL is required to schedule Pipeline retries.")
-        command_service = create_async_pipeline_services(
+        command_service = create_async_pipeline_command_service(
             runtime_settings=settings,
             session_factory=session_factory,
         )
@@ -72,7 +73,7 @@ def main() -> int:
             raise RuntimeError("ASYNC_PIPELINE_ENABLED=true is required to schedule retries.")
         scheduler = PipelineRetryScheduler(
             execution_repository=SQLAlchemyPipelineStageExecutionRepository(session_factory),
-            command_service=command_service[0],
+            command_service=command_service,
         )
         print(scheduler.schedule_due(limit=args.retry_limit))
         return 0
@@ -111,7 +112,14 @@ def _run_consumer(queue_name: str, max_messages: int | None, prefetch_count: int
         session_factory=session_factory,
     )
     vector_repository = create_vector_repository(runtime_settings=settings)
-    services = create_async_pipeline_services(
+    command_service = create_async_pipeline_command_service(
+        runtime_settings=settings,
+        session_factory=session_factory,
+    )
+    if command_service is None:
+        raise RuntimeError("ASYNC_PIPELINE_ENABLED=true is required to run the worker.")
+    worker = create_pipeline_stage_worker(
+        command_service=command_service,
         runtime_settings=settings,
         session_factory=session_factory,
         job_repository=job_repository,
@@ -121,10 +129,6 @@ def _run_consumer(queue_name: str, max_messages: int | None, prefetch_count: int
         artifact_repository=artifact_repository,
         vector_repository=vector_repository,
     )
-    if services is None:
-        raise RuntimeError("ASYNC_PIPELINE_ENABLED=true is required to run the worker.")
-
-    _command_service, worker = services
     publisher = RabbitMQPublisher(RabbitMQPublishConfig(url=rabbitmq_url))
     outbox_dispatcher = OutboxDispatcher(SQLAlchemyOutboxRepository(session_factory), publisher)
     consumer = RabbitMQWorkerConsumer(

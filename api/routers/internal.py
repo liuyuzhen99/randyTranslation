@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from api.dependencies import (
     get_artifact_lifecycle_service,
     get_artist_catalog_service,
-    get_async_pipeline_services,
+    get_async_pipeline_command_service,
     get_outbox_dispatcher,
     get_reconcile_service,
     get_runtime_settings,
@@ -133,39 +133,28 @@ async def pipeline_queue_topology():
 @router.post("/internal/phase6/worker/handle")
 async def pipeline_worker_handle(
     payload: dict,
-    services=Depends(get_async_pipeline_services),
+    command_service=Depends(get_async_pipeline_command_service),
 ):
-    if services is None:
+    if command_service is None:
         raise HTTPException(status_code=503, detail="Async pipeline is not enabled")
-    _command_service, worker = services
-    raw_payload = payload.get("payload")
-    if not isinstance(raw_payload, str):
-        raise HTTPException(status_code=422, detail="payload must be a serialized message string")
-    result = worker.handle_payload(raw_payload)
-    return {
-        "action": result.action,
-        "job_id": result.job_id,
-        "stage": result.stage,
-        "dedupe_key": result.dedupe_key,
-        "attempt": result.attempt,
-        "next_retry_seconds": result.next_retry_seconds,
-        "error": result.error,
-    }
+    raise HTTPException(
+        status_code=503,
+        detail="Pipeline stage execution is disabled in the API service; run workers/pipeline_worker.py instead",
+    )
 
 
 @router.post("/internal/pipeline/retry-scheduler/run")
 @router.post("/internal/phase6/retry-scheduler/run")
 async def pipeline_retry_scheduler_run(
     limit: int = 100,
-    services=Depends(get_async_pipeline_services),
+    command_service=Depends(get_async_pipeline_command_service),
     session_factory=Depends(get_session_factory),
 ):
     from application.services.retry_scheduler import PipelineRetryScheduler
     from infrastructure.persistence.sqlalchemy_repositories import SQLAlchemyPipelineStageExecutionRepository
 
-    if services is None or session_factory is None:
+    if command_service is None or session_factory is None:
         raise HTTPException(status_code=503, detail="Async pipeline is not enabled")
-    command_service, _worker = services
     scheduler = PipelineRetryScheduler(
         execution_repository=SQLAlchemyPipelineStageExecutionRepository(session_factory),
         command_service=command_service,

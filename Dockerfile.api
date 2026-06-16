@@ -1,0 +1,25 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements-api.txt .
+RUN python -m pip install --upgrade pip \
+    && pip install -r requirements-api.txt
+
+COPY api ./api
+COPY application ./application
+COPY domain ./domain
+COPY infrastructure ./infrastructure
+COPY services ./services
+COPY utils ./utils
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
+RUN mkdir -p /app/data /app/logs
+
+EXPOSE 8000
+
+CMD ["python", "-m", "uvicorn", "api.service:app", "--host", "0.0.0.0", "--port", "8000"]
