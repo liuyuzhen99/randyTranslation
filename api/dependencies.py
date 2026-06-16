@@ -11,10 +11,6 @@ def get_job_repository(request: Request):
     return request.app.state.job_repository
 
 
-def get_orchestrator(request: Request):
-    return request.app.state.orchestrator
-
-
 def get_media_storage(request: Request):
     return request.app.state.media_storage
 
@@ -27,16 +23,25 @@ def get_vector_repository(request: Request):
     return request.app.state.vector_repository
 
 
-def get_phase3_catalog_service(request: Request):
-    return request.app.state.phase3_catalog_service
+def get_artist_catalog_service(request: Request):
+    return request.app.state.artist_catalog_service
 
 
-def get_phase4_workflow_services(request: Request):
-    return request.app.state.phase4_workflow_services
+def get_review_workflow_services(request: Request):
+    return request.app.state.review_workflow_services
 
 
-def get_phase6_async_pipeline_services(request: Request):
-    return request.app.state.phase6_async_pipeline_services
+def get_async_pipeline_command_service(request: Request):
+    return request.app.state.async_pipeline_command_service
+
+
+def get_async_pipeline_services(request: Request):
+    return get_async_pipeline_command_service(request)
+
+
+get_phase3_catalog_service = get_artist_catalog_service
+get_phase4_workflow_services = get_review_workflow_services
+get_phase6_async_pipeline_services = get_async_pipeline_command_service
 
 
 def get_reconcile_service(request: Request):

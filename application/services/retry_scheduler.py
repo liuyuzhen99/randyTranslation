@@ -9,8 +9,8 @@ from domain.repositories import PipelineStageExecutionRepository
 from domain.time_utils import utc_now
 
 
-class Phase6RetryScheduler:
-    """DB-backed delayed delivery scheduler for Phase 6 retry attempts."""
+class PipelineRetryScheduler:
+    """DB-backed delayed delivery scheduler for Pipeline retry attempts."""
 
     def __init__(
         self,

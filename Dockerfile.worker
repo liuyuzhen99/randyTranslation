@@ -1,0 +1,36 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ffmpeg \
+        fonts-noto-cjk \
+        git \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-api.txt requirements-worker.txt ./
+RUN python -m pip install --upgrade pip \
+    && pip install -r requirements-worker.txt
+
+COPY api ./api
+COPY application ./application
+COPY core ./core
+COPY domain ./domain
+COPY infrastructure ./infrastructure
+COPY prompts ./prompts
+COPY services ./services
+COPY utils ./utils
+COPY workers ./workers
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
+RUN mkdir -p /app/data /app/logs
+
+ENTRYPOINT ["python", "workers/pipeline_worker.py"]
+CMD ["--queue", "pipeline.command"]

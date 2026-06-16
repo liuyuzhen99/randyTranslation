@@ -7,10 +7,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 
 from api.dependencies import (
     get_job_service,
-    get_orchestrator,
     get_outbox_dispatcher,
-    get_phase4_workflow_services,
-    get_phase6_async_pipeline_services,
+    get_review_workflow_services,
+    get_async_pipeline_command_service,
     get_session_factory,
     get_shadow_write_degraded,
 )
@@ -20,7 +19,7 @@ from api.service import (
     TaskRequest,
     TaskResponse,
 )
-from application.services.phase4_workflow_service import ReviewConflictError
+from application.services.review_workflow_service import ReviewConflictError
 from domain.entities import OutboxEvent
 from domain.enums import CandidateStatus, JobStatus, OutboxStatus, StageStatus, StageType
 from domain.message_contracts import PipelineStageMessage, ReviewContext
@@ -42,10 +41,10 @@ def _dispatch_outbox_if_available(outbox_dispatcher) -> dict | None:
         return None
 
 
-def _get_latest_render_job_id(candidate_id: str, phase4_services) -> str | None:
-    if phase4_services is None:
+def _get_latest_render_job_id(candidate_id: str, review_services) -> str | None:
+    if review_services is None:
         return None
-    audit_logs = phase4_services.pipeline_service.support.audit_log_repository.list_for_aggregate(
+    audit_logs = review_services.pipeline_service.support.audit_log_repository.list_for_aggregate(
         "candidate", candidate_id
     )
     for entry in reversed(audit_logs):
@@ -61,10 +60,10 @@ def _get_latest_render_job_id(candidate_id: str, phase4_services) -> str | None:
     return None
 
 
-def _get_latest_candidate_job_id(candidate_id: str, action: str, phase4_services) -> str | None:
-    if phase4_services is None:
+def _get_latest_candidate_job_id(candidate_id: str, action: str, review_services) -> str | None:
+    if review_services is None:
         return None
-    audit_logs = phase4_services.pipeline_service.support.audit_log_repository.list_for_aggregate(
+    audit_logs = review_services.pipeline_service.support.audit_log_repository.list_for_aggregate(
         "candidate", candidate_id
     )
     for entry in reversed(audit_logs):
@@ -80,11 +79,11 @@ def _get_latest_candidate_job_id(candidate_id: str, action: str, phase4_services
     return None
 
 
-def _serialize_render_job(candidate_id: str, *, job_service, phase4_services) -> dict | None:
-    if phase4_services is not None:
+def _serialize_render_job(candidate_id: str, *, job_service, review_services) -> dict | None:
+    if review_services is not None:
         ready_final_artifacts = [
             artifact
-            for artifact in phase4_services.pipeline_service.support.list_artifacts_for_candidate(candidate_id)
+            for artifact in review_services.pipeline_service.support.list_artifacts_for_candidate(candidate_id)
             if artifact.get("artifact_type") == "final_video"
             and artifact.get("lifecycle_status") == "ready"
             and artifact.get("job_id")
@@ -105,7 +104,7 @@ def _serialize_render_job(candidate_id: str, *, job_service, phase4_services) ->
                     else artifact.get("updated_at") or artifact.get("created_at")
                 ),
             }
-    job_id = _get_latest_render_job_id(candidate_id, phase4_services)
+    job_id = _get_latest_render_job_id(candidate_id, review_services)
     if job_id is None:
         return None
     job = job_service.get_job(job_id)
@@ -156,8 +155,8 @@ def _serialize_async_execution(candidate_id: str, *, session_factory) -> dict | 
     }
 
 
-def _serialize_pipeline_activity(candidate_id: str, *, job_service, phase4_services, session_factory) -> dict | None:
-    job_id = _get_latest_candidate_job_id(candidate_id, "pipeline_job_queued", phase4_services)
+def _serialize_pipeline_activity(candidate_id: str, *, job_service, review_services, session_factory) -> dict | None:
+    job_id = _get_latest_candidate_job_id(candidate_id, "pipeline_job_queued", review_services)
     executions = []
     if session_factory is not None:
         from infrastructure.persistence.sqlalchemy_repositories import (
@@ -237,36 +236,28 @@ def _serialize_pipeline_activity(candidate_id: str, *, job_service, phase4_servi
 @router.post("/create_task", response_model=TaskResponse)
 async def create_task(
     request: TaskRequest,
-    background_tasks: BackgroundTasks,
     http_request: Request,
     response: Response,
     job_service=Depends(get_job_service),
-    phase6_services=Depends(get_phase6_async_pipeline_services),
+    command_service=Depends(get_async_pipeline_command_service),
     outbox_dispatcher=Depends(get_outbox_dispatcher),
-    orchestrator=Depends(get_orchestrator),
 ):
     response.headers["Deprecation"] = "true"
     response.headers["Link"] = '</v1/candidates/{candidate_id}/render>; rel="successor-version"'
     system_logger.info(f"收到创建任务请求: 歌名={request.song_name}")
+    if command_service is None:
+        raise HTTPException(status_code=503, detail="Async pipeline is required; legacy in-process execution has been removed")
+
     job = job_service.create_job(request.song_name)
 
-    if phase6_services is not None:
-        command_service, _worker = phase6_services
-        command_service.enqueue_first_stage(
-            job,
-            candidate_id=request.candidate_id,
-            trace_id=getattr(http_request.state, "request_id", None),
-        )
-        _dispatch_outbox_if_available(outbox_dispatcher)
-        system_logger.info(f"任务 {job.job_id} 已写入 Phase 6 outbox，歌名: {request.song_name}")
-        return {"task_id": job.job_id, "message": "任务已写入异步 pipeline，请稍后通过 ID 查询进度", "candidate_id": request.candidate_id}
-
-    if request.candidate_id:
-        background_tasks.add_task(orchestrator.run, job.job_id, request.song_name, request.candidate_id)
-    else:
-        background_tasks.add_task(orchestrator.run, job.job_id, request.song_name)
-    system_logger.info(f"任务 {job.job_id} 已创建并加入后台队列，歌名: {request.song_name}")
-    return {"task_id": job.job_id, "message": "任务已启动，请稍后通过 ID 查询进度", "candidate_id": request.candidate_id}
+    command_service.enqueue_first_stage(
+        job,
+        candidate_id=request.candidate_id,
+        trace_id=getattr(http_request.state, "request_id", None),
+    )
+    _dispatch_outbox_if_available(outbox_dispatcher)
+    system_logger.info(f"任务 {job.job_id} 已写入 pipeline outbox，歌名: {request.song_name}")
+    return {"task_id": job.job_id, "message": "任务已写入异步 pipeline，请稍后通过 ID 查询进度", "candidate_id": request.candidate_id}
 
 
 @router.get("/check_status/{task_id}")
@@ -301,29 +292,28 @@ async def list_tasks(
 async def render_candidate(
     candidate_id: str,
     job_service=Depends(get_job_service),
-    phase4_services=Depends(get_phase4_workflow_services),
-    phase6_services=Depends(get_phase6_async_pipeline_services),
+    review_services=Depends(get_review_workflow_services),
+    command_service=Depends(get_async_pipeline_command_service),
     outbox_dispatcher=Depends(get_outbox_dispatcher),
 ):
-    if phase4_services is None:
-        raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
+    if review_services is None:
+        raise HTTPException(status_code=503, detail="Review workflow services are not enabled")
     try:
-        candidate = phase4_services.pipeline_service.support.get_candidate_or_raise(candidate_id)
+        candidate = review_services.pipeline_service.support.get_candidate_or_raise(candidate_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Candidate not found") from exc
     if candidate.status == CandidateStatus.DISCOVERED:
         raise HTTPException(status_code=409, detail="Candidate must be added to pipeline before render")
 
-    existing_render_job = _serialize_render_job(candidate.candidate_id, job_service=job_service, phase4_services=phase4_services)
+    existing_render_job = _serialize_render_job(candidate.candidate_id, job_service=job_service, review_services=review_services)
     if existing_render_job is not None and existing_render_job.get("status") in {JobStatus.PENDING.value, JobStatus.PROCESSING.value}:
         return {"task_id": existing_render_job["job_id"], "message": "候选视频已有渲染任务正在排队或执行，已返回现有任务 ID", "candidate_id": candidate.candidate_id}
 
-    if phase6_services is None:
-        raise HTTPException(status_code=503, detail="Phase 6 async pipeline is not enabled")
+    if command_service is None:
+        raise HTTPException(status_code=503, detail="Async pipeline is not enabled")
 
     job = job_service.create_job(candidate.title)
-    _record_render_job(candidate.candidate_id, job.job_id, phase4_services=phase4_services, actor_id="frontend-user-1")
-    command_service, _worker = phase6_services
+    _record_render_job(candidate.candidate_id, job.job_id, review_services=review_services, actor_id="frontend-user-1")
     command_service.enqueue_first_stage(job, candidate_id=candidate.candidate_id)
     _dispatch_outbox_if_available(outbox_dispatcher)
     return {"task_id": job.job_id, "message": "候选视频渲染任务已写入异步 pipeline，请稍后通过 ID 查询进度", "candidate_id": candidate.candidate_id}
@@ -336,29 +326,29 @@ async def add_candidate_to_pipeline(
     request: Request,
     x_actor_id: str | None = Header(default=None),
     job_service=Depends(get_job_service),
-    phase4_services=Depends(get_phase4_workflow_services),
-    phase6_services=Depends(get_phase6_async_pipeline_services),
+    review_services=Depends(get_review_workflow_services),
+    command_service=Depends(get_async_pipeline_command_service),
     outbox_dispatcher=Depends(get_outbox_dispatcher),
 ):
-    if phase4_services is None:
-        raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
+    if review_services is None:
+        raise HTTPException(status_code=503, detail="Review workflow services are not enabled")
     try:
         actor_id = x_actor_id or "frontend-user-1"
-        response_payload = phase4_services.pipeline_service.add_candidate(candidate_id=candidate_id, actor_id=actor_id)
-        candidate = phase4_services.pipeline_service.support.get_candidate_or_raise(candidate_id)
+        response_payload = review_services.pipeline_service.add_candidate(candidate_id=candidate_id, actor_id=actor_id)
+        candidate = review_services.pipeline_service.support.get_candidate_or_raise(candidate_id)
         task_id, message = _start_candidate_pipeline_job(
             candidate=candidate,
             actor_id=actor_id,
             background_tasks=background_tasks,
             trace_id=getattr(request.state, "request_id", None),
             job_service=job_service,
-            phase4_services=phase4_services,
-            phase6_services=phase6_services,
+            review_services=review_services,
+            command_service=command_service,
             outbox_dispatcher=outbox_dispatcher,
         )
         response_payload["task_id"] = task_id
         response_payload["message"] = message
-        if phase6_services is not None:
+        if command_service is not None:
             response_payload["candidate_status"] = CandidateStatus.DOWNLOADING.value
         return response_payload
     except KeyError as exc:
@@ -370,16 +360,16 @@ async def add_candidate_to_pipeline(
 @router.post("/v1/candidates/{candidate_id}/pipeline/retry", response_model=CandidatePipelineRetryResponse)
 async def retry_candidate_pipeline(
     candidate_id: str,
-    phase4_services=Depends(get_phase4_workflow_services),
-    phase6_services=Depends(get_phase6_async_pipeline_services),
+    review_services=Depends(get_review_workflow_services),
+    command_service=Depends(get_async_pipeline_command_service),
     outbox_dispatcher=Depends(get_outbox_dispatcher),
     session_factory=Depends(get_session_factory),
 ):
     try:
         return _manual_retry_candidate_pipeline(
             candidate_id,
-            phase4_services=phase4_services,
-            phase6_services=phase6_services,
+            review_services=review_services,
+            command_service=command_service,
             outbox_dispatcher=outbox_dispatcher,
             session_factory=session_factory,
         )
@@ -390,12 +380,12 @@ async def retry_candidate_pipeline(
 @router.get("/v1/candidates/{candidate_id}/workflow-detail")
 async def get_candidate_workflow_detail(
     candidate_id: str,
-    phase4_services=Depends(get_phase4_workflow_services),
+    review_services=Depends(get_review_workflow_services),
 ):
-    if phase4_services is None:
-        raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
+    if review_services is None:
+        raise HTTPException(status_code=503, detail="Review workflow services are not enabled")
     try:
-        return phase4_services.pipeline_service.get_candidate_detail(candidate_id)
+        return review_services.pipeline_service.get_candidate_detail(candidate_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -403,24 +393,24 @@ async def get_candidate_workflow_detail(
 @router.get("/v1/pipeline")
 async def list_pipeline(
     job_service=Depends(get_job_service),
-    phase4_services=Depends(get_phase4_workflow_services),
+    review_services=Depends(get_review_workflow_services),
     session_factory=Depends(get_session_factory),
     shadow_write_degraded: bool = Depends(get_shadow_write_degraded),
 ):
-    if phase4_services is None:
-        raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
-    items = phase4_services.pipeline_service.list_pipeline()
+    if review_services is None:
+        raise HTTPException(status_code=503, detail="Review workflow services are not enabled")
+    items = review_services.pipeline_service.list_pipeline()
     for item in items:
         async_execution = _serialize_async_execution(item["candidate_id"], session_factory=session_factory)
         if async_execution is not None:
             item["async_execution"] = async_execution
-        render_job = _serialize_render_job(item["candidate_id"], job_service=job_service, phase4_services=phase4_services)
+        render_job = _serialize_render_job(item["candidate_id"], job_service=job_service, review_services=review_services)
         if render_job is not None:
             item["render_job"] = render_job
         pipeline_activity = _serialize_pipeline_activity(
             item["candidate_id"],
             job_service=job_service,
-            phase4_services=phase4_services,
+            review_services=review_services,
             session_factory=session_factory,
         )
         if pipeline_activity is not None:
@@ -438,12 +428,12 @@ async def list_pipeline(
 
 @router.get("/v1/library")
 async def list_library(
-    phase4_services=Depends(get_phase4_workflow_services),
+    review_services=Depends(get_review_workflow_services),
     shadow_write_degraded: bool = Depends(get_shadow_write_degraded),
 ):
-    if phase4_services is None:
-        raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
-    items = phase4_services.library_service.list_library()
+    if review_services is None:
+        raise HTTPException(status_code=503, detail="Review workflow services are not enabled")
+    items = review_services.library_service.list_library()
     total = len(items)
     meta = {"generated_at": utc_now().isoformat(), "update_mode": "polling", "refresh_hint_seconds": 15}
     if shadow_write_degraded:
@@ -457,10 +447,10 @@ async def list_library(
 
 # ── internal helpers ──────────────────────────────────────────────────────────
 
-def _record_render_job(candidate_id: str, job_id: str, *, phase4_services, actor_id: str = "system") -> None:
-    if phase4_services is None:
+def _record_render_job(candidate_id: str, job_id: str, *, review_services, actor_id: str = "system") -> None:
+    if review_services is None:
         return
-    phase4_services.pipeline_service.support.log_structured(
+    review_services.pipeline_service.support.log_structured(
         aggregate_type="candidate",
         aggregate_id=candidate_id,
         action="render_job_queued",
@@ -469,10 +459,10 @@ def _record_render_job(candidate_id: str, job_id: str, *, phase4_services, actor
     )
 
 
-def _record_pipeline_job(candidate_id: str, job_id: str, actor_id: str, *, mode: str, phase4_services) -> None:
-    if phase4_services is None:
+def _record_pipeline_job(candidate_id: str, job_id: str, actor_id: str, *, mode: str, review_services) -> None:
+    if review_services is None:
         return
-    phase4_services.pipeline_service.support.log_structured(
+    review_services.pipeline_service.support.log_structured(
         aggregate_type="candidate",
         aggregate_id=candidate_id,
         action="pipeline_job_queued",
@@ -481,8 +471,8 @@ def _record_pipeline_job(candidate_id: str, job_id: str, actor_id: str, *, mode:
     )
 
 
-def _get_active_pipeline_job(candidate_id: str, *, job_service, phase4_services):
-    job_id = _get_latest_candidate_job_id(candidate_id, "pipeline_job_queued", phase4_services)
+def _get_active_pipeline_job(candidate_id: str, *, job_service, review_services):
+    job_id = _get_latest_candidate_job_id(candidate_id, "pipeline_job_queued", review_services)
     if job_id is None:
         return None
     job = job_service.get_job(job_id)
@@ -500,47 +490,46 @@ def _start_candidate_pipeline_job(
     background_tasks: BackgroundTasks,
     trace_id: str | None,
     job_service,
-    phase4_services,
-    phase6_services,
+    review_services,
+    command_service,
     outbox_dispatcher,
 ) -> tuple[str, str]:
-    active_job = _get_active_pipeline_job(candidate.candidate_id, job_service=job_service, phase4_services=phase4_services)
+    active_job = _get_active_pipeline_job(candidate.candidate_id, job_service=job_service, review_services=review_services)
     if active_job is not None:
         return active_job.job_id, "候选视频已有 pipeline job 正在排队或执行，已返回现有任务 ID"
 
     job = job_service.create_job(candidate.title)
-    if phase4_services is not None and phase6_services is not None:
+    if review_services is not None and command_service is not None:
         candidate.status = CandidateStatus.DOWNLOADING
         candidate.last_seen_at = utc_now()
-        phase4_services.pipeline_service.support.candidate_repository.upsert(candidate)
-    if phase6_services is not None:
-        command_service, _worker = phase6_services
+        review_services.pipeline_service.support.candidate_repository.upsert(candidate)
+    if command_service is not None:
         command_service.enqueue_first_stage(job, candidate_id=candidate.candidate_id, trace_id=trace_id)
         _dispatch_outbox_if_available(outbox_dispatcher)
-        _record_pipeline_job(candidate.candidate_id, job.job_id, actor_id, mode="phase6_async", phase4_services=phase4_services)
+        _record_pipeline_job(candidate.candidate_id, job.job_id, actor_id, mode="async_pipeline", review_services=review_services)
         return job.job_id, "候选视频已加入异步 pipeline，已排队下载并提取 transcript"
 
-    _record_pipeline_job(candidate.candidate_id, job.job_id, actor_id, mode="phase6_unavailable", phase4_services=phase4_services)
-    return job.job_id, "候选视频已加入 pipeline，但 Phase 6 async 未启用，尚未开始提取 transcript"
+    _record_pipeline_job(candidate.candidate_id, job.job_id, actor_id, mode="async_pipeline_unavailable", review_services=review_services)
+    return job.job_id, "候选视频已加入 pipeline，但 MV pipeline 未启用，尚未开始提取 transcript"
 
 
 def _manual_retry_candidate_pipeline(
     candidate_id: str,
     *,
-    phase4_services,
-    phase6_services,
+    review_services,
+    command_service,
     outbox_dispatcher,
     session_factory,
 ) -> CandidatePipelineRetryResponse:
-    if phase4_services is None or phase6_services is None or session_factory is None:
-        raise HTTPException(status_code=503, detail="Phase 6 async pipeline is not enabled")
+    if review_services is None or command_service is None or session_factory is None:
+        raise HTTPException(status_code=503, detail="Async pipeline is not enabled")
 
     from infrastructure.persistence.sqlalchemy_repositories import (
         SQLAlchemyOutboxRepository,
         SQLAlchemyPipelineStageExecutionRepository,
     )
 
-    phase4_services.pipeline_service.support.get_candidate_or_raise(candidate_id)
+    review_services.pipeline_service.support.get_candidate_or_raise(candidate_id)
     execution_repository = SQLAlchemyPipelineStageExecutionRepository(session_factory)
     retryable_executions = [
         execution
@@ -553,7 +542,6 @@ def _manual_retry_candidate_pipeline(
         if not execution.result_payload:
             continue
         retry_message = PipelineStageMessage.from_payload(execution.result_payload)
-        command_service, _worker = phase6_services
         outbox_repository = SQLAlchemyOutboxRepository(session_factory)
         event_id = f"{retry_message.message_type}:{retry_message.dedupe_key}"
         existing_event = outbox_repository.get(event_id)
@@ -575,7 +563,7 @@ def _manual_retry_candidate_pipeline(
             replace(execution, status=StageStatus.RETRY_SCHEDULED, next_retry_at=None, updated_at=utc_now())
         )
         dispatch_result = _dispatch_outbox_if_available(outbox_dispatcher)
-        phase4_services.pipeline_service.support.log_structured(
+        review_services.pipeline_service.support.log_structured(
             aggregate_type="candidate",
             aggregate_id=candidate_id,
             action="pipeline_retry_requested",

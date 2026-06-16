@@ -9,7 +9,7 @@ from threading import Event, Thread
 import time
 from typing import TYPE_CHECKING, Callable, Protocol
 
-from application.services.phase7_tracing import phase7_span
+from application.services.request_tracing import request_span
 from domain.entities import Job, OutboxEvent, PipelineStageExecution
 from domain.enums import JobStatus, OutboxStatus, StageStatus, StageType
 from domain.message_contracts import PipelineStageMessage, ReviewContext
@@ -154,7 +154,7 @@ class PipelineStageWorker:
 
     def handle_payload(self, payload: str) -> WorkerResult:
         message = PipelineStageMessage.from_payload(payload)
-        with phase7_span(
+        with request_span(
             "pipeline.stage.handle",
             {
                 "pipeline.job_id": message.job_id,
@@ -457,7 +457,7 @@ class PipelineStageWorker:
 
 
 class InProcessPipelineWorker:
-    """Service-local Phase 6 worker that consumes pipeline outbox events directly."""
+    """Service-local pipeline worker that consumes pipeline outbox events directly."""
 
     def __init__(
         self,
@@ -478,7 +478,7 @@ class InProcessPipelineWorker:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
-        self._thread = Thread(target=self._run_forever, name="phase6-inprocess-worker", daemon=True)
+        self._thread = Thread(target=self._run_forever, name="pipeline-inprocess-worker", daemon=True)
         self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:

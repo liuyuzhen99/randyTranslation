@@ -9,23 +9,22 @@ from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from application.services.outbox_dispatcher import OutboxDispatcher
-from application.services.async_pipeline import AsyncPipelineCommandService, PipelineStageWorker
-from application.services.pipeline_stage_handlers import PipelineStageHandlers
-from application.services.phase4_workflow_service import (
-    Phase4WorkflowServices,
-    build_phase4_workflow_services,
+from application.services.async_pipeline import AsyncPipelineCommandService
+from application.services.review_workflow_service import (
+    ReviewWorkflowServices,
+    build_review_workflow_services,
 )
-from application.services.phase3_catalog_service import (
+from application.services.artist_catalog_service import (
     CandidateCatalogService,
     CandidateDiscoveryPayload,
-    Phase3Providers,
+    ArtistCatalogProviders,
 )
-from application.services.phase2_reconcile_service import (
-    Phase2ReconcileService,
-    Phase2ReconcileThresholds,
+from application.services.dual_write_reconcile_service import (
+    DualWriteReconcileService,
+    DualWriteReconcileThresholds,
 )
 from domain.repositories import JobRepository
-from application.services.phase2_shadow_write_service import Phase2ShadowWriteService
+from application.services.shadow_write_service import ShadowWriteService
 from infrastructure.persistence.in_memory_job_repository import InMemoryJobRepository
 from infrastructure.persistence.sqlalchemy_repositories import (
     SQLAlchemyArtistRepository,
@@ -35,7 +34,6 @@ from infrastructure.persistence.sqlalchemy_repositories import (
     SQLAlchemyCandidateRepository,
     SQLAlchemyJobRepository,
     SQLAlchemyOutboxRepository,
-    SQLAlchemyPipelineStageExecutionRepository,
     SQLAlchemyReviewRepository,
     SQLAlchemySessionFactory,
     SQLAlchemySubtitleRepository,
@@ -47,7 +45,7 @@ from infrastructure.storage.local_media_storage import LocalFilesystemMediaStora
 from infrastructure.messaging.rabbitmq_publisher import RabbitMQPublishConfig, RabbitMQPublisher
 from infrastructure.vector.qdrant_repository import QdrantVectorRepository
 
-# Current runtime requirements (Phase 0 fail-fast scope).
+# Current runtime requirements (startup fail-fast scope).
 REQUIRED_ENV_VARS: tuple[str, ...] = (
     "DEEPSEEK_API_KEY",
     "DEEPSEEK_BASE_URL",
@@ -59,20 +57,20 @@ KNOWN_ENV_VARS: tuple[str, ...] = (
     "DEEPSEEK_BASE_URL",
     "JOB_REPOSITORY_BACKEND",
     "JOB_REPOSITORY_SQLITE_PATH",
-    "PHASE2_SHADOW_WRITE_ENABLED",
-    "PHASE2_AUTO_CREATE_SCHEMA",
-    "PHASE2_RECONCILE_ENABLED",
-    "PHASE2_RECONCILE_REPORT_PATH",
-    "PHASE2_RECONCILE_MAX_MISSING_JOBS",
-    "PHASE2_RECONCILE_MAX_JOB_FIELD_MISMATCHES",
-    "PHASE2_RECONCILE_MAX_INVALID_OUTBOX_PAYLOADS",
-    "PHASE2_RECONCILE_MAX_OUTBOX_PAYLOAD_MISMATCHES",
-    "PHASE2_OUTBOX_DISPATCH_ENABLED",
-    "PHASE6_ASYNC_PIPELINE_ENABLED",
-    "PHASE6_SERVICE_WORKER_ENABLED",
-    "PHASE6_SERVICE_WORKER_POLL_SECONDS",
-    "PHASE6_MAX_STAGE_ATTEMPTS",
-    "PHASE6_RETRY_BACKOFF_BASE_SECONDS",
+    "SHADOW_WRITE_ENABLED",
+    "DATABASE_AUTO_CREATE_SCHEMA",
+    "DUAL_WRITE_RECONCILE_ENABLED",
+    "DUAL_WRITE_RECONCILE_REPORT_PATH",
+    "DUAL_WRITE_RECONCILE_MAX_MISSING_JOBS",
+    "DUAL_WRITE_RECONCILE_MAX_JOB_FIELD_MISMATCHES",
+    "DUAL_WRITE_RECONCILE_MAX_INVALID_OUTBOX_PAYLOADS",
+    "DUAL_WRITE_RECONCILE_MAX_OUTBOX_PAYLOAD_MISMATCHES",
+    "OUTBOX_DISPATCH_ENABLED",
+    "ASYNC_PIPELINE_ENABLED",
+    "PIPELINE_SERVICE_WORKER_ENABLED",
+    "PIPELINE_SERVICE_WORKER_POLL_SECONDS",
+    "PIPELINE_MAX_STAGE_ATTEMPTS",
+    "PIPELINE_RETRY_BACKOFF_BASE_SECONDS",
     "ARTIST_SYNC_STALE_AFTER_SECONDS",
     "MEDIA_STORAGE_BACKEND",
     "MEDIA_TEMP_ROOT",
@@ -98,11 +96,11 @@ KNOWN_ENV_VARS: tuple[str, ...] = (
     "VECTOR_EMBEDDING_DIMENSION",
     "QDRANT_COLLECTION_PREFIX",
     "OPENAI_API_KEY",
-    "PHASE9_CUTOVER_READ_SOURCE",
-    "PHASE9_SCHEMA_FREEZE_ENABLED",
-    "PHASE9_ROLLBACK_ENABLED",
-    "PHASE9_STABILITY_WINDOW_DAYS",
-    "PHASE9_SHADOW_TRAFFIC_ENABLED",
+    "CUTOVER_READ_SOURCE",
+    "SCHEMA_FREEZE_ENABLED",
+    "ROLLBACK_ENABLED",
+    "STABILITY_WINDOW_DAYS",
+    "SHADOW_TRAFFIC_ENABLED",
     "S3_ENDPOINT_URL",
     "S3_ACCESS_KEY_ID",
     "S3_SECRET_ACCESS_KEY",
@@ -115,6 +113,28 @@ KNOWN_ENV_VARS: tuple[str, ...] = (
     "COS_SCHEME",
     "COS_ENDPOINT",
 )
+
+LEGACY_ENV_VAR_ALIASES: dict[str, str] = {
+    "PHASE2_SHADOW_WRITE_ENABLED": "SHADOW_WRITE_ENABLED",
+    "PHASE2_AUTO_CREATE_SCHEMA": "DATABASE_AUTO_CREATE_SCHEMA",
+    "PHASE2_RECONCILE_ENABLED": "DUAL_WRITE_RECONCILE_ENABLED",
+    "PHASE2_RECONCILE_REPORT_PATH": "DUAL_WRITE_RECONCILE_REPORT_PATH",
+    "PHASE2_RECONCILE_MAX_MISSING_JOBS": "DUAL_WRITE_RECONCILE_MAX_MISSING_JOBS",
+    "PHASE2_RECONCILE_MAX_JOB_FIELD_MISMATCHES": "DUAL_WRITE_RECONCILE_MAX_JOB_FIELD_MISMATCHES",
+    "PHASE2_RECONCILE_MAX_INVALID_OUTBOX_PAYLOADS": "DUAL_WRITE_RECONCILE_MAX_INVALID_OUTBOX_PAYLOADS",
+    "PHASE2_RECONCILE_MAX_OUTBOX_PAYLOAD_MISMATCHES": "DUAL_WRITE_RECONCILE_MAX_OUTBOX_PAYLOAD_MISMATCHES",
+    "PHASE2_OUTBOX_DISPATCH_ENABLED": "OUTBOX_DISPATCH_ENABLED",
+    "PHASE6_ASYNC_PIPELINE_ENABLED": "ASYNC_PIPELINE_ENABLED",
+    "PHASE6_SERVICE_WORKER_ENABLED": "PIPELINE_SERVICE_WORKER_ENABLED",
+    "PHASE6_SERVICE_WORKER_POLL_SECONDS": "PIPELINE_SERVICE_WORKER_POLL_SECONDS",
+    "PHASE6_MAX_STAGE_ATTEMPTS": "PIPELINE_MAX_STAGE_ATTEMPTS",
+    "PHASE6_RETRY_BACKOFF_BASE_SECONDS": "PIPELINE_RETRY_BACKOFF_BASE_SECONDS",
+    "PHASE9_CUTOVER_READ_SOURCE": "CUTOVER_READ_SOURCE",
+    "PHASE9_SCHEMA_FREEZE_ENABLED": "SCHEMA_FREEZE_ENABLED",
+    "PHASE9_ROLLBACK_ENABLED": "ROLLBACK_ENABLED",
+    "PHASE9_STABILITY_WINDOW_DAYS": "STABILITY_WINDOW_DAYS",
+    "PHASE9_SHADOW_TRAFFIC_ENABLED": "SHADOW_TRAFFIC_ENABLED",
+}
 
 
 def validate_startup_env(environ: Mapping[str, str] | None = None) -> None:
@@ -146,20 +166,20 @@ class AppRuntimeSettings(BaseSettings):
     postgres_db: str = ""
     postgres_user: str = ""
     postgres_password: str = ""
-    phase2_shadow_write_enabled: bool = False
-    phase2_auto_create_schema: bool = False
-    phase2_reconcile_enabled: bool = False
-    phase2_reconcile_report_path: str = ""
-    phase2_reconcile_max_missing_jobs: int = 0
-    phase2_reconcile_max_job_field_mismatches: int = 0
-    phase2_reconcile_max_invalid_outbox_payloads: int = 0
-    phase2_reconcile_max_outbox_payload_mismatches: int = 0
-    phase2_outbox_dispatch_enabled: bool = False
-    phase6_async_pipeline_enabled: bool = False
-    phase6_service_worker_enabled: bool = True
-    phase6_service_worker_poll_seconds: float = 1.0
-    phase6_max_stage_attempts: int = 3
-    phase6_retry_backoff_base_seconds: int = 30
+    shadow_write_enabled: bool = False
+    database_auto_create_schema: bool = False
+    dual_write_reconcile_enabled: bool = False
+    dual_write_reconcile_report_path: str = ""
+    dual_write_reconcile_max_missing_jobs: int = 0
+    dual_write_reconcile_max_job_field_mismatches: int = 0
+    dual_write_reconcile_max_invalid_outbox_payloads: int = 0
+    dual_write_reconcile_max_outbox_payload_mismatches: int = 0
+    outbox_dispatch_enabled: bool = False
+    async_pipeline_enabled: bool = False
+    pipeline_service_worker_enabled: bool = False
+    pipeline_service_worker_poll_seconds: float = 1.0
+    pipeline_max_stage_attempts: int = 3
+    pipeline_retry_backoff_base_seconds: int = 30
     artist_sync_stale_after_seconds: int = 1800
     media_storage_backend: str = "local"
     artifact_temp_retention_days: int = 1
@@ -168,11 +188,11 @@ class AppRuntimeSettings(BaseSettings):
     vector_embedding_provider: str = "bge"
     vector_embedding_dimension: int = 1024
     qdrant_collection_prefix: str = ""
-    phase9_cutover_read_source: str = "legacy"
-    phase9_schema_freeze_enabled: bool = False
-    phase9_rollback_enabled: bool = True
-    phase9_stability_window_days: int = 7
-    phase9_shadow_traffic_enabled: bool = False
+    cutover_read_source: str = "legacy"
+    schema_freeze_enabled: bool = False
+    rollback_enabled: bool = True
+    stability_window_days: int = 7
+    shadow_traffic_enabled: bool = False
 
     @field_validator("job_repository_backend", mode="before")
     @classmethod
@@ -220,12 +240,12 @@ class AppRuntimeSettings(BaseSettings):
             raise RuntimeError("VECTOR_EMBEDDING_DIMENSION must be at least 8.")
         return val
 
-    @field_validator("phase6_max_stage_attempts", mode="before")
+    @field_validator("pipeline_max_stage_attempts", mode="before")
     @classmethod
     def _validate_max_stage_attempts(cls, v) -> int:
         val = int(v) if isinstance(v, str) else v
         if val < 1:
-            raise RuntimeError("PHASE6_MAX_STAGE_ATTEMPTS must be at least 1.")
+            raise RuntimeError("PIPELINE_MAX_STAGE_ATTEMPTS must be at least 1.")
         return val
 
     @field_validator("artist_sync_stale_after_seconds", mode="before")
@@ -236,10 +256,10 @@ class AppRuntimeSettings(BaseSettings):
             raise RuntimeError("ARTIST_SYNC_STALE_AFTER_SECONDS must be at least 1.")
         return val
 
-    @field_validator("phase2_reconcile_max_missing_jobs", "phase2_reconcile_max_job_field_mismatches",
-                     "phase2_reconcile_max_invalid_outbox_payloads", "phase2_reconcile_max_outbox_payload_mismatches",
-                     "phase6_retry_backoff_base_seconds", "artifact_temp_retention_days",
-                     "artifact_final_retention_days", "phase9_stability_window_days", mode="before")
+    @field_validator("dual_write_reconcile_max_missing_jobs", "dual_write_reconcile_max_job_field_mismatches",
+                     "dual_write_reconcile_max_invalid_outbox_payloads", "dual_write_reconcile_max_outbox_payload_mismatches",
+                     "pipeline_retry_backoff_base_seconds", "artifact_temp_retention_days",
+                     "artifact_final_retention_days", "stability_window_days", mode="before")
     @classmethod
     def _validate_non_negative_int(cls, v) -> int:
         if v == "" or v is None:
@@ -249,13 +269,13 @@ class AppRuntimeSettings(BaseSettings):
             raise RuntimeError(f"Value must be a non-negative integer, got {val}.")
         return val
 
-    @field_validator("phase9_cutover_read_source", mode="before")
+    @field_validator("cutover_read_source", mode="before")
     @classmethod
-    def _validate_phase9_read_source(cls, v: str) -> str:
+    def _validate_cutover_read_source(cls, v: str) -> str:
         val = (v or "legacy").strip().lower()
         if val not in {"legacy", "postgres", "qdrant"}:
             raise RuntimeError(
-                "Invalid PHASE9_CUTOVER_READ_SOURCE. Expected one of: legacy, postgres, qdrant."
+                "Invalid CUTOVER_READ_SOURCE. Expected one of: legacy, postgres, qdrant."
             )
         return val
 
@@ -286,10 +306,11 @@ class AppRuntimeSettings(BaseSettings):
 def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntimeSettings:
     if environ is None:
         load_dotenv(Path.cwd() / ".env", override=False)
+        _apply_legacy_env_aliases(os.environ)
         return AppRuntimeSettings()
     # Tests inject a dict with uppercase env-var names.
     # Build settings purely from that dict, bypassing os.environ and .env.
-    field_map = {k.lower(): v for k, v in environ.items()}
+    field_map = {k.lower(): v for k, v in _with_legacy_env_aliases(environ).items()}
 
     class _DictSettings(AppRuntimeSettings):
         model_config = SettingsConfigDict(
@@ -306,6 +327,20 @@ def load_runtime_settings(environ: Mapping[str, str] | None = None) -> AppRuntim
     return _DictSettings(**field_map)
 
 
+def _with_legacy_env_aliases(environ: Mapping[str, str]) -> dict[str, str]:
+    merged = dict(environ)
+    for legacy_name, current_name in LEGACY_ENV_VAR_ALIASES.items():
+        if current_name not in merged and legacy_name in merged:
+            merged[current_name] = merged[legacy_name]
+    return merged
+
+
+def _apply_legacy_env_aliases(environ: os._Environ[str]) -> None:
+    for legacy_name, current_name in LEGACY_ENV_VAR_ALIASES.items():
+        if current_name not in environ and legacy_name in environ:
+            environ[current_name] = environ[legacy_name]
+
+
 def create_vector_repository(
     environ: Mapping[str, str] | None = None,
     runtime_settings: AppRuntimeSettings | None = None,
@@ -313,7 +348,7 @@ def create_vector_repository(
     settings = runtime_settings or load_runtime_settings(environ)
     source = environ if environ is not None else os.environ
     if settings.vector_repository_backend == "qdrant":
-        from application.services.phase8_vectors import build_embedding_provider
+        from application.services.vector_migration import build_embedding_provider
         embedding_provider = build_embedding_provider(
             settings.vector_embedding_provider,
             dimension=settings.vector_embedding_dimension,
@@ -380,64 +415,64 @@ def create_sqlalchemy_session_factory(
     if not settings.database_url:
         return None
     session_factory = SQLAlchemySessionFactory(settings.database_url)
-    if settings.phase2_auto_create_schema:
+    if settings.database_auto_create_schema:
         session_factory.create_schema()
     return session_factory
 
 
-def create_phase2_shadow_write_service(
+def create_shadow_write_service(
     environ: Mapping[str, str] | None = None,
     runtime_settings: AppRuntimeSettings | None = None,
     session_factory: SQLAlchemySessionFactory | None = None,
-) -> Phase2ShadowWriteService | None:
+) -> ShadowWriteService | None:
     settings = runtime_settings or load_runtime_settings(environ)
-    if not settings.phase2_shadow_write_enabled:
+    if not settings.shadow_write_enabled:
         return None
     active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
     if active_session_factory is None:
         raise RuntimeError(
-            "PHASE2_SHADOW_WRITE_ENABLED requires DATABASE_URL to be configured."
+            "SHADOW_WRITE_ENABLED requires DATABASE_URL to be configured."
         )
-    return Phase2ShadowWriteService(active_session_factory)
+    return ShadowWriteService(active_session_factory)
 
 
-def create_phase2_reconcile_service(
+def create_dual_write_reconcile_service(
     primary_job_repository: JobRepository,
     environ: Mapping[str, str] | None = None,
     runtime_settings: AppRuntimeSettings | None = None,
     session_factory: SQLAlchemySessionFactory | None = None,
-) -> Phase2ReconcileService | None:
+) -> DualWriteReconcileService | None:
     settings = runtime_settings or load_runtime_settings(environ)
-    if not settings.phase2_reconcile_enabled:
+    if not settings.dual_write_reconcile_enabled:
         return None
     active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
     if active_session_factory is None:
         raise RuntimeError(
-            "PHASE2_RECONCILE_ENABLED requires DATABASE_URL to be configured."
+            "DUAL_WRITE_RECONCILE_ENABLED requires DATABASE_URL to be configured."
         )
-    return Phase2ReconcileService(
+    return DualWriteReconcileService(
         primary_job_repository,
         active_session_factory,
-        thresholds=Phase2ReconcileThresholds(
-            max_missing_jobs=settings.phase2_reconcile_max_missing_jobs,
-            max_job_field_mismatches=settings.phase2_reconcile_max_job_field_mismatches,
-            max_invalid_outbox_payloads=settings.phase2_reconcile_max_invalid_outbox_payloads,
-            max_outbox_payload_mismatches=settings.phase2_reconcile_max_outbox_payload_mismatches,
+        thresholds=DualWriteReconcileThresholds(
+            max_missing_jobs=settings.dual_write_reconcile_max_missing_jobs,
+            max_job_field_mismatches=settings.dual_write_reconcile_max_job_field_mismatches,
+            max_invalid_outbox_payloads=settings.dual_write_reconcile_max_invalid_outbox_payloads,
+            max_outbox_payload_mismatches=settings.dual_write_reconcile_max_outbox_payload_mismatches,
         ),
     )
 
 
-def create_phase2_outbox_dispatcher(
+def create_outbox_dispatcher(
     publisher=None,
     environ: Mapping[str, str] | None = None,
     runtime_settings: AppRuntimeSettings | None = None,
     session_factory: SQLAlchemySessionFactory | None = None,
 ) -> OutboxDispatcher | None:
     settings = runtime_settings or load_runtime_settings(environ)
-    if not settings.phase2_outbox_dispatch_enabled and not settings.phase6_async_pipeline_enabled:
+    if not settings.outbox_dispatch_enabled and not settings.async_pipeline_enabled:
         return None
     if publisher is None:
-        if settings.phase6_async_pipeline_enabled:
+        if settings.async_pipeline_enabled:
             rabbitmq_url = (environ if environ is not None else os.environ).get("RABBITMQ_URL", "").strip()
             if rabbitmq_url:
                 publisher = RabbitMQPublisher(RabbitMQPublishConfig(url=rabbitmq_url))
@@ -446,57 +481,31 @@ def create_phase2_outbox_dispatcher(
     active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
     if active_session_factory is None:
         raise RuntimeError(
-            "PHASE2_OUTBOX_DISPATCH_ENABLED requires DATABASE_URL to be configured."
+            "OUTBOX_DISPATCH_ENABLED requires DATABASE_URL to be configured."
         )
     return OutboxDispatcher(SQLAlchemyOutboxRepository(active_session_factory), publisher)
 
 
-def create_phase6_async_pipeline_services(
+def create_async_pipeline_command_service(
     environ: Mapping[str, str] | None = None,
     runtime_settings: AppRuntimeSettings | None = None,
     session_factory: SQLAlchemySessionFactory | None = None,
-    job_repository: JobRepository | None = None,
-    media_storage=None,
-    producer_backend_factory=None,
-    workflow_services: Phase4WorkflowServices | None = None,
-    artifact_repository=None,
-    vector_repository=None,
-) -> tuple[AsyncPipelineCommandService, PipelineStageWorker] | None:
+) -> AsyncPipelineCommandService | None:
     settings = runtime_settings or load_runtime_settings(environ)
-    if not settings.phase6_async_pipeline_enabled:
+    if not settings.async_pipeline_enabled:
         return None
     active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
     if active_session_factory is None:
-        raise RuntimeError("PHASE6_ASYNC_PIPELINE_ENABLED requires DATABASE_URL to be configured.")
-    active_job_repository = job_repository or SQLAlchemyJobRepository(active_session_factory)
+        raise RuntimeError("ASYNC_PIPELINE_ENABLED requires DATABASE_URL to be configured.")
     outbox_repository = SQLAlchemyOutboxRepository(active_session_factory)
-    command_service = AsyncPipelineCommandService(
+    return AsyncPipelineCommandService(
         outbox_repository=outbox_repository,
-        max_attempts=settings.phase6_max_stage_attempts,
+        max_attempts=settings.pipeline_max_stage_attempts,
     )
-    handlers = None
-    if media_storage is not None and producer_backend_factory is not None:
-        handlers = PipelineStageHandlers(
-            media_storage=media_storage,
-            producer_backend_factory=producer_backend_factory,
-            workflow_services=workflow_services,
-            artifact_repository=artifact_repository,
-            vector_repository=vector_repository,
-            final_artifact_retention_days=settings.artifact_final_retention_days,
-        ).as_mapping()
-    worker = PipelineStageWorker(
-        job_repository=active_job_repository,
-        execution_repository=SQLAlchemyPipelineStageExecutionRepository(active_session_factory),
-        command_service=command_service,
-        handlers=handlers,
-        backoff_base_seconds=settings.phase6_retry_backoff_base_seconds,
-        session_factory=active_session_factory,
-    )
-    return command_service, worker
 
 
-def create_phase3_catalog_service(
-    providers: Phase3Providers | None = None,
+def create_artist_catalog_service(
+    providers: ArtistCatalogProviders | None = None,
     environ: Mapping[str, str] | None = None,
     runtime_settings: AppRuntimeSettings | None = None,
     session_factory: SQLAlchemySessionFactory | None = None,
@@ -505,7 +514,7 @@ def create_phase3_catalog_service(
     active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
     if active_session_factory is None:
         return None
-    active_providers = providers or Phase3Providers(
+    active_providers = providers or ArtistCatalogProviders(
         followed_artists_lookup=_default_followed_artists_lookup_provider,
         channel_lookup=_default_channel_lookup_provider,
         candidate_lookup=_default_candidate_lookup_provider,
@@ -519,16 +528,16 @@ def create_phase3_catalog_service(
     )
 
 
-def create_phase4_workflow_services(
+def create_review_workflow_services(
     environ: Mapping[str, str] | None = None,
     runtime_settings: AppRuntimeSettings | None = None,
     session_factory: SQLAlchemySessionFactory | None = None,
-) -> Phase4WorkflowServices | None:
+) -> ReviewWorkflowServices | None:
     settings = runtime_settings or load_runtime_settings(environ)
     active_session_factory = session_factory or create_sqlalchemy_session_factory(environ, settings)
     if active_session_factory is None:
         return None
-    return build_phase4_workflow_services(
+    return build_review_workflow_services(
         artist_repository=SQLAlchemyArtistRepository(active_session_factory),
         candidate_repository=SQLAlchemyCandidateRepository(active_session_factory),
         review_repository=SQLAlchemyReviewRepository(active_session_factory),
@@ -537,6 +546,14 @@ def create_phase4_workflow_services(
         video_repository=SQLAlchemyVideoRepository(active_session_factory),
         artifact_repository=SQLAlchemyArtifactRepository(active_session_factory),
     )
+
+
+create_phase2_shadow_write_service = create_shadow_write_service
+create_phase2_reconcile_service = create_dual_write_reconcile_service
+create_phase2_outbox_dispatcher = create_outbox_dispatcher
+create_phase6_async_pipeline_services = create_async_pipeline_command_service
+create_phase3_catalog_service = create_artist_catalog_service
+create_phase4_workflow_services = create_review_workflow_services
 
 
 def create_artifact_repository(

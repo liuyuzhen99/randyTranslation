@@ -6,8 +6,8 @@ from dataclasses import replace
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from api.dependencies import (
-    get_phase4_workflow_services,
-    get_phase6_async_pipeline_services,
+    get_review_workflow_services,
+    get_async_pipeline_command_service,
     get_outbox_dispatcher,
     get_session_factory,
 )
@@ -17,7 +17,7 @@ from api.service import (
     TranscriptSubmissionRequest,
     TranslationSubmissionRequest,
 )
-from application.services.phase4_workflow_service import ReviewConflictError
+from application.services.review_workflow_service import ReviewConflictError
 from domain.enums import ReviewType, StageType
 from domain.message_contracts import PipelineStageMessage, ReviewContext
 from domain.time_utils import utc_now
@@ -29,16 +29,16 @@ def _meta():
     return {"generated_at": utc_now().isoformat(), "update_mode": "polling", "refresh_hint_seconds": 15}
 
 
-def _resume_phase6_after_review(
+def _resume_pipeline_after_review(
     candidate_id: str,
     review_type,
     song_name: str,
     *,
-    phase6_services,
+    command_service,
     outbox_dispatcher,
     session_factory,
 ) -> None:
-    if phase6_services is None or session_factory is None:
+    if command_service is None or session_factory is None:
         return
     next_stage = None
     if review_type == ReviewType.MANUAL_REVIEW:
@@ -58,7 +58,6 @@ def _resume_phase6_after_review(
         resume_payload = {}
     resume_payload.pop("pause", None)
     resume_payload.pop("pause_reason", None)
-    command_service, _worker = phase6_services
     command_service.enqueue_stage(
         PipelineStageMessage.build(
             message_type="pipeline.stage.command",
@@ -78,11 +77,11 @@ def _resume_phase6_after_review(
 @router.get("/v1/audit-queue")
 async def list_audit_queue(
     status: str | None = None,
-    phase4_services=Depends(get_phase4_workflow_services),
+    review_services=Depends(get_review_workflow_services),
 ):
-    if phase4_services is None:
-        raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
-    items = phase4_services.audit_service.list_queue(status=status)
+    if review_services is None:
+        raise HTTPException(status_code=503, detail="Review workflow services are not enabled")
+    items = review_services.audit_service.list_queue(status=status)
     total = len(items)
     return {
         "items": items,
@@ -95,11 +94,11 @@ async def list_audit_queue(
 async def list_audit_log(
     aggregate_type: str,
     aggregate_id: str,
-    phase4_services=Depends(get_phase4_workflow_services),
+    review_services=Depends(get_review_workflow_services),
 ):
-    if phase4_services is None:
-        raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
-    items = phase4_services.audit_service.list_audit_logs(
+    if review_services is None:
+        raise HTTPException(status_code=503, detail="Review workflow services are not enabled")
+    items = review_services.audit_service.list_audit_logs(
         aggregate_type=aggregate_type,
         aggregate_id=aggregate_id,
     )
@@ -116,28 +115,28 @@ async def approve_review(
     review_id: str,
     request: ReviewDecisionRequest,
     x_actor_id: str | None = Header(default=None),
-    phase4_services=Depends(get_phase4_workflow_services),
-    phase6_services=Depends(get_phase6_async_pipeline_services),
+    review_services=Depends(get_review_workflow_services),
+    command_service=Depends(get_async_pipeline_command_service),
     outbox_dispatcher=Depends(get_outbox_dispatcher),
     session_factory=Depends(get_session_factory),
 ):
-    if phase4_services is None:
-        raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
+    if review_services is None:
+        raise HTTPException(status_code=503, detail="Review workflow services are not enabled")
     try:
-        review_before = phase4_services.audit_service.support.review_repository.get(review_id)
-        result = phase4_services.audit_service.approve_review(
+        review_before = review_services.audit_service.support.review_repository.get(review_id)
+        result = review_services.audit_service.approve_review(
             review_id=review_id,
             actor_id=(x_actor_id or "manual-review"),
             expected_version=request.expected_version,
             comment=request.comment,
         )
         if review_before is not None:
-            candidate = phase4_services.audit_service.support.get_candidate_or_raise(review_before.subject_id)
-            _resume_phase6_after_review(
+            candidate = review_services.audit_service.support.get_candidate_or_raise(review_before.subject_id)
+            _resume_pipeline_after_review(
                 review_before.subject_id,
                 review_before.review_type,
                 candidate.title,
-                phase6_services=phase6_services,
+                command_service=command_service,
                 outbox_dispatcher=outbox_dispatcher,
                 session_factory=session_factory,
             )
@@ -153,12 +152,12 @@ async def reject_review(
     review_id: str,
     request: ReviewDecisionRequest,
     x_actor_id: str | None = Header(default=None),
-    phase4_services=Depends(get_phase4_workflow_services),
+    review_services=Depends(get_review_workflow_services),
 ):
-    if phase4_services is None:
-        raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
+    if review_services is None:
+        raise HTTPException(status_code=503, detail="Review workflow services are not enabled")
     try:
-        return phase4_services.audit_service.reject_review(
+        return review_services.audit_service.reject_review(
             review_id=review_id,
             actor_id=(x_actor_id or "manual-review"),
             expected_version=request.expected_version,
@@ -175,12 +174,12 @@ async def submit_transcript(
     candidate_id: str,
     request: TranscriptSubmissionRequest,
     x_actor_id: str | None = Header(default=None),
-    phase4_services=Depends(get_phase4_workflow_services),
+    review_services=Depends(get_review_workflow_services),
 ):
-    if phase4_services is None:
-        raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
+    if review_services is None:
+        raise HTTPException(status_code=503, detail="Review workflow services are not enabled")
     try:
-        return phase4_services.automation_service.submit_transcript(
+        return review_services.automation_service.submit_transcript(
             candidate_id=candidate_id,
             actor_id=(x_actor_id or "ai-transcriber"),
             segments=[segment.model_dump() for segment in request.segments],
@@ -200,15 +199,15 @@ async def submit_taste_audit(
     candidate_id: str,
     request: TasteAuditRequest,
     x_actor_id: str | None = Header(default=None),
-    phase4_services=Depends(get_phase4_workflow_services),
+    review_services=Depends(get_review_workflow_services),
 ):
-    if phase4_services is None:
-        raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
+    if review_services is None:
+        raise HTTPException(status_code=503, detail="Review workflow services are not enabled")
     decision = request.decision.strip().lower()
     if decision not in {"approved", "rejected"}:
         raise HTTPException(status_code=400, detail="Taste audit decision must be 'approved' or 'rejected'.")
     try:
-        return phase4_services.automation_service.record_taste_audit(
+        return review_services.automation_service.record_taste_audit(
             candidate_id=candidate_id,
             actor_id=(x_actor_id or "ai-auditor"),
             approve=(decision == "approved"),
@@ -229,12 +228,12 @@ async def submit_translation(
     candidate_id: str,
     request: TranslationSubmissionRequest,
     x_actor_id: str | None = Header(default=None),
-    phase4_services=Depends(get_phase4_workflow_services),
+    review_services=Depends(get_review_workflow_services),
 ):
-    if phase4_services is None:
-        raise HTTPException(status_code=503, detail="Phase 4 workflow services are not enabled")
+    if review_services is None:
+        raise HTTPException(status_code=503, detail="Review workflow services are not enabled")
     try:
-        return phase4_services.automation_service.submit_translation(
+        return review_services.automation_service.submit_translation(
             candidate_id=candidate_id,
             actor_id=(x_actor_id or "ai-translator"),
             translations=[line.model_dump() for line in request.translations],

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from api.dependencies import get_phase3_catalog_service
-from application.services.phase3_catalog_service import ArtistListFilters, CandidateListFilters
+from api.dependencies import get_artist_catalog_service
+from application.services.artist_catalog_service import ArtistListFilters, CandidateListFilters
 
 router = APIRouter(tags=["artists"])
 
@@ -22,12 +22,12 @@ async def list_artists(
     q: str = "",
     sync_status: str = "",
     sort: str = "candidate_count_desc",
-    catalog_service=Depends(get_phase3_catalog_service),
+    catalog_service=Depends(get_artist_catalog_service),
 ):
     from domain.time_utils import utc_now
 
     if catalog_service is None:
-        raise HTTPException(status_code=503, detail="Phase 3 catalog service is not enabled")
+        raise HTTPException(status_code=503, detail="Artist catalog service is not enabled")
     items, total = catalog_service.list_artists(
         filters=ArtistListFilters(
             page=max(page, 1),
@@ -50,12 +50,12 @@ async def list_artist_candidates(
     page: int = 1,
     page_size: int = 20,
     status: str = "",
-    catalog_service=Depends(get_phase3_catalog_service),
+    catalog_service=Depends(get_artist_catalog_service),
 ):
     from domain.time_utils import utc_now
 
     if catalog_service is None:
-        raise HTTPException(status_code=503, detail="Phase 3 catalog service is not enabled")
+        raise HTTPException(status_code=503, detail="Artist catalog service is not enabled")
     if catalog_service.artist_repository.get(artist_id) is None:
         raise HTTPException(status_code=404, detail="Artist not found")
     items, total = catalog_service.list_candidates(
@@ -78,10 +78,10 @@ async def list_artist_candidates(
 async def resync_artist(
     artist_id: str,
     days: int = 14,
-    catalog_service=Depends(get_phase3_catalog_service),
+    catalog_service=Depends(get_artist_catalog_service),
 ):
     if catalog_service is None:
-        raise HTTPException(status_code=503, detail="Phase 3 catalog service is not enabled")
+        raise HTTPException(status_code=503, detail="Artist catalog service is not enabled")
     try:
         return catalog_service.resync_artist(artist_id=artist_id, days=days, trigger="manual")
     except KeyError:

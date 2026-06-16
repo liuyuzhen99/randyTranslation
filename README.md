@@ -75,7 +75,7 @@ cp .env.example .env
 ```dotenv
 JOB_REPOSITORY_BACKEND=sqlalchemy
 DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/randy_translation
-PHASE6_ASYNC_PIPELINE_ENABLED=true
+ASYNC_PIPELINE_ENABLED=true
 RABBITMQ_URL=amqp://guest:guest@localhost:5672/
 MEDIA_STORAGE_BACKEND=local
 MEDIA_TEMP_ROOT=./data/media/temp
@@ -144,31 +144,31 @@ set -a
 source .env
 set +a
 
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --declare-only
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --declare-only
 ```
 
 启动最小 command worker：
 
 ```bash
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.command --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.command --prefetch 1
 ```
 
 完整流水线可按阶段分别启动 worker：
 
 ```bash
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.download --prefetch 1
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.transcribe --prefetch 1
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.audit --prefetch 1
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.manual_review --prefetch 1
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.translate --prefetch 1
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.translation_review --prefetch 1
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.render --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.download --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.transcribe --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.audit --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.manual_review --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.translate --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.translation_review --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.render --prefetch 1
 ```
 
 调度到期重试：
 
 ```bash
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --schedule-retries --retry-limit 100
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --schedule-retries --retry-limit 100
 ```
 
 ### API 概览
@@ -209,10 +209,10 @@ PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --schedule-retries --retr
 
 - `GET /healthz`
 - `GET /readyz`
-- `GET /internal/phase6/queue-topology`
-- `GET /internal/phase7/observability`
-- `GET /internal/phase7/metrics`
-- `GET /internal/phase9/cutover-readiness`
+- `GET /internal/pipeline/queue-topology`
+- `GET /internal/observability/snapshot`
+- `GET /internal/observability/metrics`
+- `GET /internal/cutover/readiness`
 
 旧版兼容接口：
 
@@ -231,10 +231,10 @@ PYTHONPATH=. .venv/bin/python -m unittest discover -s test -p 'test*.py'
 运行重点测试：
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m unittest test/test_phase0_config_validation.py
-PYTHONPATH=. .venv/bin/python -m unittest test/test_phase3_catalog.py
-PYTHONPATH=. .venv/bin/python -m unittest test/test_phase6_async_pipeline.py
-PYTHONPATH=. .venv/bin/python -m unittest test/test_phase9_cutover.py
+PYTHONPATH=. .venv/bin/python -m unittest test/test_config_validation.py
+PYTHONPATH=. .venv/bin/python -m unittest test/test_artist_catalog.py
+PYTHONPATH=. .venv/bin/python -m unittest test/test_async_pipeline.py
+PYTHONPATH=. .venv/bin/python -m unittest test/test_cutover_readiness.py
 ```
 
 部分集成测试依赖 PostgreSQL、RabbitMQ、Qdrant、ffmpeg 或云媒体凭证。请通过本地环境变量配置，不要提交真实凭证。
@@ -335,7 +335,7 @@ Minimum settings for the modern backend stack:
 ```dotenv
 JOB_REPOSITORY_BACKEND=sqlalchemy
 DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/randy_translation
-PHASE6_ASYNC_PIPELINE_ENABLED=true
+ASYNC_PIPELINE_ENABLED=true
 RABBITMQ_URL=amqp://guest:guest@localhost:5672/
 MEDIA_STORAGE_BACKEND=local
 MEDIA_TEMP_ROOT=./data/media/temp
@@ -404,31 +404,31 @@ set -a
 source .env
 set +a
 
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --declare-only
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --declare-only
 ```
 
 Start a minimal command worker:
 
 ```bash
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.command --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.command --prefetch 1
 ```
 
 For full pipeline processing, run one worker per active stage queue:
 
 ```bash
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.download --prefetch 1
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.transcribe --prefetch 1
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.audit --prefetch 1
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.manual_review --prefetch 1
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.translate --prefetch 1
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.translation_review --prefetch 1
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --queue pipeline.stage.render --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.download --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.transcribe --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.audit --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.manual_review --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.translate --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.translation_review --prefetch 1
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --queue pipeline.stage.render --prefetch 1
 ```
 
 Schedule due retries:
 
 ```bash
-PYTHONPATH=. .venv/bin/python workers/phase6_worker.py --schedule-retries --retry-limit 100
+PYTHONPATH=. .venv/bin/python workers/pipeline_worker.py --schedule-retries --retry-limit 100
 ```
 
 ### API Overview
@@ -469,10 +469,10 @@ Operations:
 
 - `GET /healthz`
 - `GET /readyz`
-- `GET /internal/phase6/queue-topology`
-- `GET /internal/phase7/observability`
-- `GET /internal/phase7/metrics`
-- `GET /internal/phase9/cutover-readiness`
+- `GET /internal/pipeline/queue-topology`
+- `GET /internal/observability/snapshot`
+- `GET /internal/observability/metrics`
+- `GET /internal/cutover/readiness`
 
 Legacy compatibility APIs:
 
@@ -491,10 +491,10 @@ PYTHONPATH=. .venv/bin/python -m unittest discover -s test -p 'test*.py'
 Run focused suites:
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m unittest test/test_phase0_config_validation.py
-PYTHONPATH=. .venv/bin/python -m unittest test/test_phase3_catalog.py
-PYTHONPATH=. .venv/bin/python -m unittest test/test_phase6_async_pipeline.py
-PYTHONPATH=. .venv/bin/python -m unittest test/test_phase9_cutover.py
+PYTHONPATH=. .venv/bin/python -m unittest test/test_config_validation.py
+PYTHONPATH=. .venv/bin/python -m unittest test/test_artist_catalog.py
+PYTHONPATH=. .venv/bin/python -m unittest test/test_async_pipeline.py
+PYTHONPATH=. .venv/bin/python -m unittest test/test_cutover_readiness.py
 ```
 
 Some integration tests require PostgreSQL, RabbitMQ, Qdrant, ffmpeg, or cloud/media credentials. Keep those configured through local environment variables, not committed secrets.
