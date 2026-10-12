@@ -24,7 +24,6 @@ COPY application ./application
 COPY core ./core
 COPY domain ./domain
 COPY infrastructure ./infrastructure
-COPY prompts ./prompts
 COPY services ./services
 COPY utils ./utils
 COPY workers ./workers
